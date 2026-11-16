@@ -1,0 +1,34 @@
+--- a/src/nvidia/src/kernel/gpu/gsp/kernel_gsp.c
++++ b/src/nvidia/src/kernel/gpu/gsp/kernel_gsp.c
+@@ -4570,9 +4570,31 @@
+         rpcInfo->bFlrSupported     = pKernelBif->getProperty(pKernelBif, PDB_PROP_KBIF_FLR_SUPPORTED);
+         rpcInfo->b64bBar0Supported = pKernelBif->getProperty(pKernelBif, PDB_PROP_KBIF_64BIT_BAR0_SUPPORTED);
+ 
+         // Cache pcie link capabilities from config space
+         rpcInfo->pcieConfigReg.linkCap = pKernelBif->pcieConfigReg.linkCap;
++
++        /* CMP Gen4 cap-debug (CmpGen4Dbg=1): force the Max Link Speed nibble
++         * (bits 3:0) of the linkCap shipped to GSP-RM to 4 (Gen4). This is a
++         * one-variable experiment to test whether SET_PCIE_SPEED(4)'s 0x56
++         * (NV_ERR_NOT_SUPPORTED) is gated by this boot-cached capability.
++         * CAPABILITY-ONLY: it does NOT train the link, touch the PHY, or run
++         * the Booter. Cold-boot recoverable. Do NOT also set CmpGen4=1 (that
++         * re-enables the abandoned 0x881C0 Booter write which wedges GSP). */
++        {
++            NvU32 cmpDbgGen4 = 0;
++            (void)osReadRegistryDword(pGpu, "CmpGen4Dbg", &cmpDbgGen4);
++            if (cmpDbgGen4 == 1 &&
++                ((pGpu->idInfo.PCIDeviceID >> 16) == 0x20C2 ||
++                 (pGpu->idInfo.PCIDeviceID >> 16) == 0x2082))
++            {
++                NvU32 lcDbg = rpcInfo->pcieConfigReg.linkCap;
++                rpcInfo->pcieConfigReg.linkCap = (lcDbg & ~0xFU) | 4U;
++                NV_PRINTF(LEVEL_ERROR,
++                          "SEC2_DEBUG: CMP Gen4 capdbg linkCap 0x%08x -> 0x%08x (MaxSpeed=4)\n",
++                          lcDbg, rpcInfo->pcieConfigReg.linkCap);
++            }
++        }
+     }
+ 
+     if (IS_SIMULATION(pGpu))
+     {

@@ -1,0 +1,34 @@
+{
+  "title": "上电打毛刺 → 监控判定:怎么知道打没打成",
+  "subtitle": "卡插主板 PCIe x16(上电) · Pico USB 插同一台主机 · 软件经 BAR0 读寄存器判定,无需示波器",
+  "palette": "contrast",
+  "width": 168, "height": 88,
+  "figsize_w": 16.8,
+  "layout": "free",
+  "groups": [
+    {"id": "G1", "x": 2, "y": 49, "w": 164, "h": 32, "color": "blue", "title": "① 物理连接(三样东西)"},
+    {"id": "G2", "x": 2, "y": 6, "w": 164, "h": 39, "color": "yellow", "title": "② 一次 campaign 的判定流程(软件自动跑)"}
+  ],
+  "nodes": [
+    {"id": "gpu", "x": 5, "y": 62, "w": 40, "h": 13, "color": "blue", "emph": true, "title": "CMP 170HX 插主板 PCIe x16", "sub": "正常上电 · 背面焊 SDA/SCL/PEX_RST/GND"},
+    {"id": "pico", "x": 62, "y": 62, "w": 40, "h": 13, "color": "green", "emph": true, "title": "Pico 2 (RP2350)", "sub": "4 线连卡 · 烧 pwmvid.uf2"},
+    {"id": "host", "x": 62, "y": 50.5, "w": 40, "h": 9, "color": "purple", "title": "同一台主机(Linux)", "sub": "USB 控 Pico · 经 PCIe BAR0 读卡\n(nvidia 驱动须卸载拉黑)", "ts": 9.0, "ss": 7.0},
+
+    {"id": "s1", "x": 5, "y": 28, "w": 30, "h": 11, "color": "white", "title": "① baseline", "sub": "上电先读影子 fuse 存档"},
+    {"id": "s2", "x": 39, "y": 28, "w": 34, "h": 11, "color": "white", "title": "② campaign --adaptive", "sub": "Pico 在 PEX_RST 释放沿打浅三脉冲"},
+    {"id": "s3", "x": 77, "y": 28, "w": 40, "h": 11, "color": "yellow", "emph": true, "title": "③ 主机读 BAR0 判 5 项", "sub": "DSOV=0 · FPF行可读 · DSOV可写\nPLM=0xffffffff · CRC=0x55"},
+    {"id": "s4", "x": 121, "y": 28, "w": 43, "h": 11, "color": "green", "emph": true, "title": "全过 = Goldilocks 达成", "sub": "DSOV=0 且 CRC=0x55\nexit 0,JSON 打出 calibrated v_dip"},
+    {"id": "s5", "x": 105, "y": 11, "w": 43, "h": 11, "color": "gray", "title": "未过 = 自动调 v_dip 重打", "sub": "under(CRC对但DSOV=1,太浅)/ over\n(dsov=0但CRC错或掉链,太深)按6.25mV步进"}
+  ],
+  "arrows": [
+    {"from": "gpu.right", "to": "pico.left", "label": "I2C/PMBus + PEX_RST"},
+    {"from": "pico.bottom", "to": "host.top", "label": "USB 串口 /dev/ttyACM0"},
+    {"from": "host.left", "to": "gpu.bottom", "via": [[25, 55]], "dash": true, "label": "PCIe BAR0 mmap", "fs": 6.8},
+
+    {"from": "s1.right", "to": "s2.left"},
+    {"from": "s2.right", "to": "s3.left"},
+    {"from": "s3.right", "to": "s4.left", "label": "5 项全过"},
+    {"from": "s3.bottom@110", "to": "s5.top@110", "label": "任一项没过"},
+    {"from": "s5.left", "to": "s2.bottom@56", "via": [[56, 16.5]], "dash": true, "label": "调 v_dip 下一发", "fs": 6.6}
+  ]
+}

@@ -1,0 +1,6 @@
+# 二进制文件统一处理,避免换行转换损坏
+*.tar.gz binary
+*.png binary
+*.jpg binary
+*.zip binary
+*.uf2 binary

@@ -1,0 +1,80 @@
+diff -Naur a/src/nvidia/src/kernel/gpu/gsp/kernel_gsp.c b/src/nvidia/src/kernel/gpu/gsp/kernel_gsp.c
+--- a/src/nvidia/src/kernel/gpu/gsp/kernel_gsp.c
++++ b/src/nvidia/src/kernel/gpu/gsp/kernel_gsp.c
+@@ -127,6 +127,24 @@
+     return (devId == SEC2_POSTBL_TIMING_CMP_170HX_8GB_PCI_DEVICE_ID ||
+             devId == SEC2_POSTBL_TIMING_CMP_170HX_10GB_PCI_DEVICE_ID);
+ }
+ 
+ #include "crashcat/crashcat_report.h"
+ 
++#include "kernel/gpu/cmp_hbm_ndiv_cfg.h"
++#ifdef CMPUNLOCK_MCLK_NDIV
++
++/* HBM NDIV register map (manifest: common/constants.yaml hbm_ndiv) */
++#define CMP_REG_FBPA_PLL_PLM        0x00903c7cU
++#define CMP_REG_FBPA_PLL_CFG        0x00903c90U
++#define CMP_REG_FBPA_PLL_COEFF      0x00903c98U
++#define CMP_REG_FBPA_PLL_COEFF_MC   0x0098bc98U  /* multicast COEFF */
++#define CMP_REG_PRI_FENCE           0x001211fcU
++#define CMP_REG_FBIO_BROADCAST      0x009a0590U
++#define CMP_REG_HBM_SELF_REFRESH    0x009a031cU
++#define CMP_REG_DDLL_CAL            0x009a11dcU
++#define CMP_REG_DDLL_CAL_STATUS_0   0x009a0674U
++#define CMP_REG_DDLL_CAL_STATUS_1   0x009a0678U
++
++#endif
++#include "kernel/gpu/cmp_hbm_ndiv_impl.h"
++
+@@ -4945,5 +4963,10 @@
+             { 0x008200d8U, 0xffffffffU, "RECONFIG_PLM" },
+             { 0x0000c840U, 0xffffffffU, "PJTAG_PLM" },
+             { 0x0000c848U, 0xffffffffU, "PJTAG_SEC_PLM" },
+         };
+ 
++#ifdef CMPUNLOCK_MCLK_NDIV
++            { 0x009a3c7cU, 0xffffffffU, "FBPA_PLL0" },
++            { 0x009a3c80U, 0xffffffffU, "FBPA_PLL1" },
++            { 0x009a3c84U, 0xffffffffU, "FBPA_PLL2" },
++#endif
+@@ -4956,5 +4979,5 @@
+                   wpr2Lo, wpr2Hi);
+ 
+-        for (plmIdx = 0; plmIdx < 12; plmIdx++)
++        for (plmIdx = 0; plmIdx < NV_ARRAY_ELEMENTS(plmTable); plmIdx++)
+         {
+             NvBool opened = NV_FALSE;
+@@ -5173,6 +5196,9 @@
+ 
+     NV_CHECK_OK_OR_GOTO(status, LEVEL_ERROR, kgspStartLogPolling(pGpu, pKernelGsp), done);
+ 
+ done:
+     pKernelGsp->bInInit = NV_FALSE;
+ 
++#ifdef CMPUNLOCK_MCLK_NDIV
++    kgspCmpHbmNdivPostGsp(pGpu, pKernelGsp);
++#endif
+diff -Naur a/src/nvidia/src/kernel/gpu/gsp/arch/turing/kernel_gsp_tu102.c b/src/nvidia/src/kernel/gpu/gsp/arch/turing/kernel_gsp_tu102.c
+--- a/src/nvidia/src/kernel/gpu/gsp/arch/turing/kernel_gsp_tu102.c
++++ b/src/nvidia/src/kernel/gpu/gsp/arch/turing/kernel_gsp_tu102.c
+@@ -63,6 +63,8 @@
+ #define SEC2_DEBUG_PRI_FBPA_CFG1                    0x009a0204
+ #define SEC2_DEBUG_PRI_MMU_LMR                      0x00100ce0
+ 
++#include "kernel/gpu/cmp_hbm_ndiv_cfg.h"
++
+ void
+ kgspConfigureFalcon_TU102
+ (
+@@ -571,6 +573,11 @@
+         return status;
+     }
+ 
++    // HBM NDIV overclock: first half, after Booter Load, before GSP runs.
++#ifdef CMPUNLOCK_MCLK_NDIV
++    kgspCmpHbmNdivPostBooterLoad(pGpu, pKernelGsp);
++#endif
++
+     // Send init RPCs necessary for GSP-RM booting, before creating OBJGPU.
+     // Skips for suspend/resume as GSP saves/restores context
+     if (bootMode == KGSP_BOOT_MODE_NORMAL)

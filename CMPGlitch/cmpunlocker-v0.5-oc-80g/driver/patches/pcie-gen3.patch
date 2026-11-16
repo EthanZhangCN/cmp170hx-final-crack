@@ -1,0 +1,65 @@
+--- a/src/nvidia/src/kernel/gpu/gsp/arch/turing/kernel_gsp_tu102.c
++++ b/src/nvidia/src/kernel/gpu/gsp/arch/turing/kernel_gsp_tu102.c
+@@ -652,3 +652,62 @@
++    /* CMP Gen3: proven post-GSP Gen3 sequence (lixiangwuxian/170hx_tips).
++     * Gated on CmpGen3=1 registry key; runs after the Gen2 late block so it
++     * overrides to Gen3. Fuses are permanently burned on this card, so no
++     * volatile probe-stage fuse override is needed. Judge success by LnkSta.
++     */
++    if (status == NV_OK && ((pGpu->idInfo.PCIDeviceID >> 16) == 0x20C2 ||
++                            (pGpu->idInfo.PCIDeviceID >> 16) == 0x2082))
++    {
++        NvU32 enableGen3 = 0;
++        (void)osReadRegistryDword(pGpu, "CmpGen3", &enableGen3);
++        if (enableGen3 == 1)
++        {
++            NvU32 v, dlmgr, i;
++            /* PRIV_MISC_1: Gen3 enable bits 11,13; clear 12,14 and 30,31 */
++            v = GPU_REG_RD32(pGpu, 0x0008841cU);
++            v = (v | (1U << 11) | (1U << 13)) &
++                ~((1U << 12) | (1U << 14) | 0xc0000000U);
++            GPU_REG_WR32(pGpu, 0x0008841cU, v);
++            /* CYA_0: clear DIS_G2 (bit2) and Gen3 disable (bit3) */
++            v = GPU_REG_RD32(pGpu, 0x0008c2c0U);
++            GPU_REG_WR32(pGpu, 0x0008c2c0U, v & ~((1U << 2) | (1U << 3)));
++            /* LINK_CTRL_2: target speed = Gen3 (normal encoding 3) */
++            v = GPU_REG_RD32(pGpu, 0x000880a8U);
++            GPU_REG_WR32(pGpu, 0x000880a8U, (v & ~0xfU) | 3U);
++            /* PL_LINK_RATE: Gen3 rate field = 3 at bits 16-19 */
++            v = GPU_REG_RD32(pGpu, 0x0008c1c0U);
++            GPU_REG_WR32(pGpu, 0x0008c1c0U, (v & ~0x000f0000U) | (3U << 16));
++            /* VSEC_HIERARCHY: SET bit12 (Gen3; opposite of Gen2) */
++            v = GPU_REG_RD32(pGpu, 0x00088610U);
++            GPU_REG_WR32(pGpu, 0x00088610U, v | 0x1000U);
++            /* LINK_CONFIG_0: MAX_RATE = 1 (REVERSED encoding: 1 = 8 GT/s) */
++            v = GPU_REG_RD32(pGpu, 0x0008c040U);
++            GPU_REG_WR32(pGpu, 0x0008c040U, (v & ~0x000c0000U) | (1U << 18));
++            /* DLManager trigger + LTSSM idle poll, then XVE_FUSE_OVERRIDE = 8 */
++            dlmgr = GPU_REG_RD32(pGpu, 0x0008b8c0U);
++            GPU_REG_WR32(pGpu, 0x0008b8c0U, dlmgr | 4U);
++            for (i = 0; i < 100000; i++)
++            {
++                v = GPU_REG_RD32(pGpu, 0x0008c040U);
++                if (v == 0xffffffffU || (v & 0x1fU) == 0) break;
++            }
++            if (v != 0xffffffffU && (v & 0x1fU) == 0)
++            {
++                GPU_REG_WR32(pGpu, 0x0008c040U, (v & ~0xfU) | 1U);
++                for (i = 0; i < 100000; i++)
++                {
++                    v = GPU_REG_RD32(pGpu, 0x0008c040U);
++                    if (v == 0xffffffffU || (v & 0x1fU) == 0) break;
++                }
++            }
++            if (v != 0xffffffffU)
++                GPU_REG_WR32(pGpu, 0x0008b8c0U, dlmgr);
++            if (v != 0xffffffffU && (v & 0x1fU) == 0)
++                GPU_REG_WR32(pGpu, 0x0008872cU, 8U);
++            NV_PRINTF(LEVEL_ERROR,
++                      "SEC2_DEBUG: PCIe Gen3 post-GSP sequence applied (CmpGen3=1)\n");
++        }
++    }
++
+     if (status != NV_OK)
+     {
+         NV_PRINTF(LEVEL_ERROR, "failed to execute Booter Load (ucode for initial boot): 0x%x\n", status);

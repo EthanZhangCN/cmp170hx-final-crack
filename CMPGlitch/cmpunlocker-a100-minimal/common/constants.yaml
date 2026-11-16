@@ -1,0 +1,60 @@
+gpu:
+  vendor_id: "10de"
+  device_ids:
+    a100: "0x20B5"
+
+# The converted card is a native A100 80GB PCIe: memory geometry, ECC, BAR1
+# and PCIe Gen4 are all native. No geometry rewrite is performed; the profile
+# values below are metadata only (geometry_rewrite: false).
+profiles:
+  a100:
+    stock_mib: 81920
+    unlocked_mib: 81920
+    cfg1: "0x02779000"
+    lmr: "0x0000028B"
+    fb_bytes: "0x0000001400000000"
+    label: "80GB-native"
+    geometry_rewrite: false
+
+unlocks:
+  privilege_masks:
+    patch: sec2-postbl-plm-ss-cfg.patch
+    registers:
+      pjtag_plm:      { addr: "0x0000c840", value: "0xffffffff" }
+      pjtag_sec_plm:  { addr: "0x0000c848", value: "0xffffffff" }
+      xve:            { addr: "0x00088ff4", value: "0xffffffff" }
+      xve_b:          { addr: "0x00088ab4", value: "0xffffffff" }
+      xve_c:          { addr: "0x00088ff8", value: "0xffffffff" }
+      wpr:            { addr: "0x001fa7c4", value: "0xffffffff" }
+      wpr_cfg:        { addr: "0x001fa7cc", value: "0xfffff0ff" }
+      opt_plm:        { addr: "0x008200fc", value: "0xffffffff" }
+      feat:           { addr: "0x00823804", value: "0xffffffff" }
+      feat2:          { addr: "0x00823b00", value: "0xffffffff" }
+      fbpa_plm:       { addr: "0x009a0148", value: "0xffffffff" }
+
+  compute_throughput:
+    patch: sec2-postbl-plm-ss-cfg.patch
+    registers:
+      sm_speed_select_0: { addr: "0x0082381c", value: "0x88888888" }
+      sm_speed_select_1: { addr: "0x00823820", value: "0x00000008" }
+
+  booter_verify:
+    patch: booter-verify.patch
+    registers: {}
+
+  hbm_ndiv:
+    patch: hbm-ndiv.patch
+    registers:
+      fbpa_pll_plm:        { addr: "0x00903c7c" }
+      fbpa_pll_cfg:        { addr: "0x00903c90" }
+      fbpa_pll_coeff:      { addr: "0x00903c98" }
+      fbpa_pll_coeff_mc:   { addr: "0x0098bc98" }
+      fbio_broadcast:      { addr: "0x009a0590" }
+      hbm_self_refresh:    { addr: "0x009a031c" }
+      ddll_cal:            { addr: "0x009a11dc" }
+      ddll_cal_status_0:   { addr: "0x009a0674" }
+      ddll_cal_status_1:   { addr: "0x009a0678" }
+      pri_fence:           { addr: "0x001211fc" }
+      plm_gate_pll0:       { addr: "0x009a3c7c", value: "0xffffffff" }
+      plm_gate_pll1:       { addr: "0x009a3c80", value: "0xffffffff" }
+      plm_gate_pll2:       { addr: "0x009a3c84", value: "0xffffffff" }

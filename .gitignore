@@ -1,0 +1,41 @@
+# ---- 上游仓库(保留各自 .git 可 pull,不入外层库) ----
+pico-ga100vfi/
+ga100vfi/
+cmp170hx-ffcalc/
+cmp-170hx-rir-burn-util/
+
+# ---- 大型驱动源码 tar:仅留本地副本,不入库 ----
+# 根目录副本(部署清单引用);构建缓存副本见 cmpunlocker/driver/.build/
+open-gpu-kernel-modules-*.tar.gz
+
+# cmpunlocker 构建缓存(含同款 tar)
+cmpunlocker/driver/.build/
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# ---- 固件/驱动构建产物 ----
+build/
+*.uf2
+*.elf
+*.hex
+*.rom
+
+# ---- 本地实验/临时 ----
+*.log
+tmp/
+.vscode/
+.idea/
+.DS_Store
+
+# ---- 烧写计划等本地生成物(每卡不同,勿入库)----
+plan.json
+tools/ff_plan*.json
+snapshots/probe_*.json
+captures/
+campaigns/
+settings.json

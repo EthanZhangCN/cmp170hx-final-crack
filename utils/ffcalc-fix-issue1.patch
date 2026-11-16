@@ -1,0 +1,211 @@
+From a91f729dba309c48e6cdab701a8122cc3455235e Mon Sep 17 00:00:00 2001
+From: analysis <analysis@local>
+Date: Sun, 15 Nov 2026 07:47:13 +0800
+Subject: [PATCH] Guard against planning burns on non-FF-enumerated dumps
+ (issue #1)
+
+---
+ ffcalc/analyze.py    | 15 +++++++++++++++
+ ffcalc/cli.py        | 23 +++++++++++++++--------
+ ffcalc/dump.py       |  4 ++++
+ ffcalc/generate.py   | 10 +++++++++-
+ ffcalc/ingest.py     |  7 ++++++-
+ ffcalc/simulate.py   | 10 +++++++++-
+ tests/test_ffcalc.py | 24 +++++++++++++++---------
+ 7 files changed, 73 insertions(+), 20 deletions(-)
+
+diff --git a/ffcalc/analyze.py b/ffcalc/analyze.py
+index d23dbcf..8feefcf 100644
+--- a/ffcalc/analyze.py
++++ b/ffcalc/analyze.py
+@@ -9,6 +9,21 @@ def ff_rows_only(dump):
+             if FF_ROW_MIN <= r <= FF_ROW_MAX}
+ 
+ 
++def ff_rows_enumerated(dump):
++    """True only when the dump actually probed the physical FF rows.
++
++    A default capture reads only the 61 option registers and leaves ff_rows
++    empty. Planning a burn off that silently assumes every row is blank and
++    starts at FF_ROW_MIN, overwriting records the card already carries. We
++    trust either an explicit ff_rows_enumerated flag or a non-empty ff_rows;
++    an explicit False (or a missing flag with empty ff_rows) is "unknown",
++    which we refuse to treat as "all zero".
++    """
++    if "ff_rows_enumerated" in dump:
++        return bool(dump["ff_rows_enumerated"])
++    return len(ff_rows_only(dump)) > 0
++
++
+ def used_ff_rows(dump):
+     return sorted(r for r, v in ff_rows_only(dump).items() if v != 0)
+ 
+diff --git a/ffcalc/cli.py b/ffcalc/cli.py
+index 57fbcfa..4f0c629 100644
+--- a/ffcalc/cli.py
++++ b/ffcalc/cli.py
+@@ -152,14 +152,21 @@ def main(argv=None):
+             dpath = ingest.save_dump(args.outdir, dump)
+             pinfo = "-"
+             if not args.no_gen:
+-                obj = plan(dump)
+-                if not os.path.isdir(args.plans):
+-                    os.makedirs(args.plans)
+-                ppath = os.path.join(args.plans,
+-                                     ingest.card_id(dump) + ".burn.json")
+-                with io.open(ppath, "w", encoding="utf-8") as f:
+-                    json.dump(obj, f, indent=2, sort_keys=True)
+-                pinfo = "%s (%d records)" % (ppath, len(obj["burn"]))
++                try:
++                    obj = plan(dump)
++                except SystemExit as e:
++                    # Not FF-enumerated: refuse to plan, keep the dump, warn.
++                    pinfo = "refused (not FF-enumerated)"
++                    print("WARN %s: %s"
++                          % (dump.get("uuid") or dump.get("fingerprint"), e))
++                else:
++                    if not os.path.isdir(args.plans):
++                        os.makedirs(args.plans)
++                    ppath = os.path.join(args.plans,
++                                         ingest.card_id(dump) + ".burn.json")
++                    with io.open(ppath, "w", encoding="utf-8") as f:
++                        json.dump(obj, f, indent=2, sort_keys=True)
++                    pinfo = "%s (%d records)" % (ppath, len(obj["burn"]))
+             rows.append((dump, rep, pinfo))
+         if not rows:
+             print("no cards found under %s/bar0map.tsv" % args.dir)
+diff --git a/ffcalc/dump.py b/ffcalc/dump.py
+index 5666b47..db88b92 100644
+--- a/ffcalc/dump.py
++++ b/ffcalc/dump.py
+@@ -28,4 +28,8 @@ def load_dump(path):
+     for extra in ("uuid", "fingerprint", "bdf", "info"):
+         if extra in raw:
+             out[extra] = raw[extra]
++    # Preserve the capture's own statement about whether it probed the
++    # physical FF rows; the planner/verifier refuse unenumerated dumps.
++    if "ff_rows_enumerated" in raw:
++        out["ff_rows_enumerated"] = bool(raw["ff_rows_enumerated"])
+     return out
+diff --git a/ffcalc/generate.py b/ffcalc/generate.py
+index d9f5905..81e53f5 100644
+--- a/ffcalc/generate.py
++++ b/ffcalc/generate.py
+@@ -1,10 +1,18 @@
+ from . import ffrecord
+-from .analyze import analyze, replay_blocks, used_ff_rows
++from .analyze import analyze, ff_rows_enumerated, replay_blocks, used_ff_rows
+ from .optionmap import (FIELDS, FF_ROW_MAX, FF_ROW_MIN, blocks_touched,
+                         get_bits, set_bits)
+ 
+ 
+ def plan(dump, only=None, skip=(), overrides=None):
++    if not ff_rows_enumerated(dump):
++        raise SystemExit(
++            "refusing to plan: this dump has no physical FF rows "
++            "(ff_rows is empty). A default capture reads only option "
++            "registers. Re-capture with the FF rows probed "
++            "(capture.py --read-ff-rows on an idle card) so the planner "
++            "knows which rows are already burned; planning off an empty "
++            "ff_rows would overwrite existing records.")
+     rep = analyze(dump, overrides)
+     targets = rep["targets"]
+     warnings = list(rep["warnings"])
+diff --git a/ffcalc/ingest.py b/ffcalc/ingest.py
+index 558902c..847b419 100644
+--- a/ffcalc/ingest.py
++++ b/ffcalc/ingest.py
+@@ -81,8 +81,13 @@ def build_dump(m, entries, sku="8gb", bdf=None, uuid=None, source=None):
+         w = raw.get("info." + name)
+         if w is not None:
+             info[name] = w
++    # ffprobe.ko reads only the 61 option/defective registers; it does NOT
++    # probe the physical FF rows, so ff_rows stays empty. Mark the dump as
++    # not FF-enumerated so the planner/verifier refuse to plan off it (an
++    # empty ff_rows is "unknown", not "all blank").
+     dump = {"sku": sku, "ff_rows": {}, "option_words": words, "info": info,
+-            "source": source or "ffprobe.ko", "read_only": True}
++            "source": source or "ffprobe.ko", "read_only": True,
++            "ff_rows_enumerated": False}
+     if bdf:
+         dump["bdf"] = bdf
+     if uuid:
+diff --git a/ffcalc/simulate.py b/ffcalc/simulate.py
+index b6ef2d3..83fd4a4 100644
+--- a/ffcalc/simulate.py
++++ b/ffcalc/simulate.py
+@@ -1,5 +1,6 @@
+ from . import ffrecord
+-from .analyze import free_ff_rows, replay_blocks, used_ff_rows
++from .analyze import (ff_rows_enumerated, free_ff_rows, replay_blocks,
++                      used_ff_rows)
+ from .optionmap import BY_KEY, FIELDS, FF_ROW_MAX, FF_ROW_MIN, decode_field
+ 
+ 
+@@ -11,6 +12,13 @@ def simulate(dump, plan_obj):
+         if p and d and p != d:
+             errors.append("plan %s %s does not match card %s"
+                           % (idfield, p, d))
++    if not ff_rows_enumerated(dump):
++        errors.append(
++            "dump has no physical FF rows (ff_rows empty); cannot prove the "
++            "planned rows are free. Re-capture with --read-ff-rows before "
++            "trusting this plan.")
++        return {"table": [], "errors": errors, "warnings": warnings,
++                "pending": [], "ff_rows_used_after": 0}
+     base = {c: dict(b) for c, b in replay_blocks(dump).items()}
+     after = {c: dict(b) for c, b in base.items()}
+     used = set(used_ff_rows(dump))
+diff --git a/tests/test_ffcalc.py b/tests/test_ffcalc.py
+index cd3871a..5abf051 100644
+--- a/tests/test_ffcalc.py
++++ b/tests/test_ffcalc.py
+@@ -168,6 +168,7 @@ class TestIngest(unittest.TestCase):
+     def test_scan_cli(self):
+         out = tempfile.mkdtemp(prefix="ffcalc-out-")
+         self.addCleanup(shutil.rmtree, out, True)
++        # scan must refuse to generate plans for non-FF-enumerated dumps.
+         rc = cli.main(["scan", "--dir", self._collect_dir(),
+                        "--outdir", os.path.join(out, "cards"),
+                        "--plans", os.path.join(out, "plans")])
+@@ -176,9 +177,9 @@ class TestIngest(unittest.TestCase):
+             cid = uuid[4:]
+             self.assertTrue(os.path.exists(
+                 os.path.join(out, "cards", cid + ".json")))
+-            with open(os.path.join(out, "plans",
+-                                   cid + ".burn.json")) as f:
+-                self.assertEqual(json.load(f)["uuid"], uuid)
++            # no plan is written: the dump was not FF-enumerated
++            self.assertFalse(os.path.exists(
++                os.path.join(out, "plans", cid + ".burn.json")))
+ 
+     def test_verify_cli_ok_and_mismatch(self):
+         out = tempfile.mkdtemp(prefix="ffcalc-out-")
+@@ -188,13 +189,18 @@ class TestIngest(unittest.TestCase):
+                   "--plans", os.path.join(out, "plans")])
+         plan5 = os.path.join(out, "plans",
+                              UUIDS[0xfa000000][1][4:] + ".burn.json")
++        # scan refused to plan (not FF-enumerated), so there is no plan to
++        # verify. Hand-craft one and confirm verify rejects the unenumerated
++        # dump at the simulate() layer.
++        self.assertFalse(os.path.exists(plan5))
++        dump = list(ingest.read_collected(self._collect_dir()))[0]
++        burn = {"uuid": dump["uuid"], "fingerprint": dump["fingerprint"],
++                "targets": {}, "burn": []}
++        os.makedirs(os.path.dirname(plan5), exist_ok=True)
++        with open(plan5, "w") as f:
++            json.dump(burn, f)
+         rc = cli.main(["verify", plan5, "--dir", self._collect_dir()])
+-        self.assertEqual(rc, 0)
+-        wrong = {bar: (bdf, "GPU-" + "f" * 32)
+-                 for bar, (bdf, _u) in UUIDS.items()}
+-        rc = cli.main(["verify", plan5,
+-                       "--dir", self._collect_dir(wrong)])
+-        self.assertEqual(rc, 1)
++        self.assertEqual(rc, 1)  # rejected: dump has no physical FF rows
+ 
+ 
+ if __name__ == "__main__":
+-- 
+2.43.0
+

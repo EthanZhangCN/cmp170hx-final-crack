@@ -1,0 +1,75 @@
+{
+  "title": "CMP 170HX 电压毛刺解锁 — Pico (RP2350) 方案",
+  "subtitle": "dalzyu/pico-ga100vfi · I2C/PMBus 直驱 MP2888B · t=0 = PEX_RST 释放沿 · eFuse 不可逆",
+  "palette": "contrast",
+  "width": 168, "height": 96,
+  "figsize_w": 16.8,
+  "layout": "free",
+  "groups": [
+    {"id": "G1", "x": 2, "y": 57, "w": 164, "h": 30, "color": "blue", "title": "① 接线(卡背面 4 根线,全程可逆)"},
+    {"id": "G2", "x": 2, "y": 2, "w": 164, "h": 53, "color": "yellow", "title": "② 毛刺时序 + campaign 判定闭环(t=0 = PEX_RST 释放沿)"}
+  ],
+  "nodes": [
+    {"id": "mp", "x": 2.5, "y": 67, "w": 14.5, "h": 12, "color": "orange", "title": "MP2888B\nVRM", "ts": 8.0},
+    {"id": "gpu", "x": 22, "y": 62, "w": 24, "h": 20.5, "color": "blue", "emph": true, "title": "CMP 170HX\n(GA100)", "sub": "卡背面元件面"},
+
+    {"id": "sda", "x": 52, "y": 79.7, "w": 30, "h": 5.6, "color": "teal", "emph": true, "title": "Q808 上 pad", "sub": "I2CC SDA", "ts": 8.2, "ss": 7.0},
+    {"id": "scl", "x": 52, "y": 73.7, "w": 30, "h": 5.6, "color": "teal", "emph": true, "title": "Q808 左下 pad", "sub": "I2CC SCL", "ts": 8.2, "ss": 7.0},
+    {"id": "pex", "x": 52, "y": 67.7, "w": 30, "h": 5.6, "color": "red", "emph": true, "title": "U809/U810 中间 pad", "sub": "PEX_RST_BUF* 1.8V", "ts": 8.0, "ss": 7.0},
+    {"id": "gnd", "x": 52, "y": 63.0, "w": 30, "h": 4.8, "color": "gray", "title": "任意 GND 过孔", "ts": 8.2},
+
+    {"id": "p0", "x": 88, "y": 79.7, "w": 11, "h": 5.6, "color": "teal", "emph": true, "title": "GP0", "sub": "4 脚", "ts": 8.0, "ss": 6.8},
+    {"id": "p1", "x": 88, "y": 73.7, "w": 11, "h": 5.6, "color": "teal", "emph": true, "title": "GP1", "sub": "5 脚", "ts": 8.0, "ss": 6.8},
+    {"id": "p22", "x": 88, "y": 67.7, "w": 11, "h": 5.6, "color": "red", "emph": true, "title": "GP22", "sub": "30 脚", "ts": 7.8, "ss": 6.6},
+    {"id": "pg", "x": 88, "y": 63.0, "w": 11, "h": 4.8, "color": "gray", "title": "GND", "sub": "3 脚", "ts": 8.0, "ss": 6.8},
+
+    {"id": "pico", "x": 102, "y": 62, "w": 27, "h": 20.5, "color": "green", "emph": true, "title": "Pico 2\n(RP2350)", "sub": "GP0/GP1 = i2c0 1MHz\nGP22 直连(禁串阻)"},
+    {"id": "host", "x": 137, "y": 62, "w": 27, "h": 20.5, "color": "purple", "title": "主机(装卡同一台)", "sub": "ga100vfi CLI\n串口 /dev/ttyACM0\n先拉黑 nvidia 驱动"},
+    {"id": "bar0", "x": 141, "y": 58.2, "w": 23, "h": 2.2, "color": "white", "title": "BAR0 读 fuse", "ts": 7.0},
+
+    {"id": "t1", "x": 6, "y": 5, "w": 28, "h": 11, "color": "white", "title": "t=−1300µs", "sub": "VOUT_MIN=0x20\nE1=0xC2FA 使能 PMBus"},
+    {"id": "t2", "x": 37, "y": 5, "w": 26, "h": 11, "color": "white", "title": "t=−1000µs", "sub": "assert PEX_RST\n电压→600mV"},
+    {"id": "t3", "x": 66, "y": 5, "w": 32, "h": 11, "color": "yellow", "emph": true, "title": "浅三脉冲 下凹 ~354mV", "sub": "pw=198µs低 / gap=150µs高\ndelay=117µs 补 46µs 滞后", "ts": 8.2},
+    {"id": "t4", "x": 101, "y": 5, "w": 22, "h": 11, "color": "red", "emph": true, "title": "t=0", "sub": "释放 PEX_RST\nGPU 采样 fuse"},
+    {"id": "t5", "x": 126, "y": 5, "w": 32, "h": 11, "color": "white", "title": "t=+10 / +60µs", "sub": "VOUT_COMMAND=0x7E\nVOUT_MIN=0x30 复原"},
+
+    {"id": "miss", "x": 118, "y": 17, "w": 44, "h": 8.6, "color": "gray", "title": "未命中", "sub": "--adaptive 按 6.25mV 步进\n逼近边界再磨"},
+    {"id": "cls", "x": 118, "y": 29.5, "w": 44, "h": 10, "color": "white", "title": "classify 5 项检查", "sub": "DSOV=0 · CRC=0x55 · PLM=0xffffffff\nPCIe link-up · BAR0 可读", "ss": 6.8},
+    {"id": "hit", "x": 118, "y": 42, "w": 44, "h": 10, "color": "green", "emph": true, "title": "Goldilocks 命中", "sub": "实测 14%/发 · 中位 5 发 <1s"}
+  ],
+  "waves": [
+    {"color": "blue", "base": 24,
+     "pts": [[26, 24], [38, 39], [66, 39], [66, 29], [75, 29], [75, 39], [82, 39], [82, 29],
+             [91, 29], [91, 39], [98, 39], [98, 29], [107, 29], [107, 39], [115, 39], [117, 39]],
+     "texts": [{"x": 40, "y": 41.6, "s": "600mV", "color": "#2f5d9e", "fs": 7.0},
+               {"x": 84, "y": 26.6, "s": "~354mV", "color": "#b03027", "fs": 7.0}],
+     "break": 46, "ticks": []}
+  ],
+  "arrows": [
+    {"from": "mp.right", "to": "gpu.left", "label": "NVVDD", "color": "orange"},
+
+    {"from": "gpu.right@82.5", "to": "sda.left", "label": "SDA", "color": "teal"},
+    {"from": "sda.right", "to": "p0.left", "color": "teal"},
+    {"from": "gpu.right@76.5", "to": "scl.left", "label": "SCL", "color": "teal"},
+    {"from": "scl.right", "to": "p1.left", "color": "teal"},
+    {"from": "gpu.right@70.5", "to": "pex.left", "label": "PEX_RST", "color": "red"},
+    {"from": "pex.right", "to": "p22.left", "color": "red"},
+    {"from": "gpu.right@65.4", "to": "gnd.left", "label": "GND", "color": "gray"},
+    {"from": "gnd.right", "to": "pg.left", "color": "gray"},
+
+    {"from": "pico.right@75", "to": "host.left@75", "label": "USB 串口", "dash": true},
+    {"from": "host.bottom@150", "to": "bar0.top@150", "label": "读 fuse", "dash": true, "fs": 6.6},
+
+    {"from": "t1.right", "to": "t2.left"},
+    {"from": "t2.right", "to": "t3.left"},
+    {"from": "t3.right", "to": "t4.left"},
+    {"from": "t4.right", "to": "t5.left"},
+    {"from": "t2.top@50", "to": "wave:50,39", "dash": true, "label": "assert 拉低", "color": "red", "fs": 6.6},
+    {"from": "t4.top@107", "to": "wave:107,29.6", "dash": true, "label": "释放", "color": "red", "fs": 6.8},
+
+    {"from": "t5.top@134", "to": "cls.bottom@134"},
+    {"from": "cls.top@140", "to": "hit.bottom@140", "label": "5 项全过"},
+    {"from": "cls.left@34", "to": "miss.left@21", "via": [[113, 34], [113, 21]], "label": "任一项没过"},
+    {"from": "miss.bottom@124", "to": "t3.bottom@82", "via": [[124, 2.5], [82, 2.5]], "dash": true, "label": "调 v_dip 下轮", "fs": 6.6}
+  ]
+}
