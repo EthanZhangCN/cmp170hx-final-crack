@@ -80,18 +80,18 @@ gcc make linux-headers-$(uname -r)         # 编 ffprobe.ko 采集模块
 
 **实物接线总览**(Pico 平放卡面,USB-C 朝下;4 根线连到卡背面):
 
-![实物接线总览](pico-ga100vfi/docs/images/board-wiring-overview.jpg)
+![实物接线总览](images/board-wiring-overview.jpg)
 
 **焊点特写**(Q808 的 SDA/SCL,U809/U810 的 PEX_RST):
 
-![焊点特写1](pico-ga100vfi/docs/images/tap-points-closeup.jpg)
+![焊点特写1](images/tap-points-closeup.jpg)
 
 ![焊点特写2](images/position.jpg)
 
 
 **接线示意**(信号流向):
 
-![接线示意](pico-ga100vfi/docs/images/wiring-diagram.jpg)
+![接线示意](images/wiring-diagram.jpg)
 
 **接线与时序框图**:
 
@@ -131,7 +131,7 @@ sudo env PYTHONPATH=$PWD/host python3 -m ga100vfi campaign \
 
 **实测三脉冲波形**(命令→电压滞后约 46µs,已用 delay 补偿;来自 Kate 单卡 100 发实测):
 
-![实测三脉冲波形](pico-ga100vfi/docs/images/nvvdd-waveform.png)
+![实测三脉冲波形](images/nvvdd-waveform.png)
 
 ### ✅ 达成判据(Goldilocks)
 终端打出 `"passed": true`,且:
