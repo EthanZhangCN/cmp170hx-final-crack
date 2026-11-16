@@ -301,6 +301,124 @@ memory.total: 81920 MiB  ← 需阶段 5 显存几何后才满血
 
 ---
 
+## 阶段 6 · 转 A100 80GB PCIe(可选,高风险)
+
+> 目的:把卡的 **熔丝 devid** 从 CMP `0x20C2` 改成 A100 `0x20B5`,再刷 A100 80GB VBIOS,让卡以 "NVIDIA A100 80GB PCIe" 身份识别、拿原生 81920 MiB + BAR1 128 GiB。
+> ⛔ **比烧 FF 更危险**:多了一次 nvflash 刷写;一旦平台 POST 不过,带内无退路,只能 CH341A 离线救。**没备好 CH341A + 烙铁不要动。**
+> 实测跑通(2026-11-16,ASUS TUF B450M-PRO S / R5 3600 / 615.71.09):`lspci` 报 `10de:20b5`,`nvidia-smi` 报 A100 80GB PCIe / 81920 MiB / VBIOS `92.00.A0.00.03` / 300 W。
+
+### 6.0 原理:boot gate 比的是"熔丝 devid",不是"VBIOS devid"
+
+- GSP/DevInit 检查 **VBIOS devid ↔ 熔丝 devid** 一致性。直接刷 A100 ROM 到熔丝还是 `0x20C2` 的卡上必被拒。
+- 反过来:**先把熔丝改成 `0x20B5`,A100 ROM 就是"原厂签名 + ID 匹配"**,MAC 校验自然通过——ROM 一个字节不改。
+- 熔丝编码:`device_id << 1`;CMP `0x20C2<<1=0x4184` → A100 `0x20B5<<1=0x416A`。
+- 烧写 FF 记录:chain=2,block 37(DEVIDA)/38(DEVIDB),word `(data<<16)|(block<<6)|chain`:
+  - block 37:`0x416A0942`;block 38:`0x416A0982`。
+
+### 6.1 前置条件(缺一不可)
+
+1. **平台 BIOS 能分配 128 GB 的 64-bit prefetchable BAR1**(A100 VBIOS 声明 BAR1=128GB):
+   - `Above 4G Decoding = Enabled`(**必开,不开直接卡 VGA 灯**)
+   - `CSM = Disabled`、`Re-Size BAR = Enabled`、`MMIO High Size ≥ 128G`(有则设满)
+   - "新板" ≠ "能过",判据是 MMIO 窗口 ≥ 128G
+2. 已完成阶段 0–4(打金窗 + 烧 FF 那套都熟)
+3. **nvflash 5.692 x64**
+4. **CMP 原厂 ROM 备份**(`nvflash --save`,只认自己这份 dump)
+5. **CH341A + SOP8 夹**(POST 挂死时唯一离线退路;不备好就别烧)
+
+### 6.2 流程(3 个必做 + 2 个检查点,**同一开机周期干完**)
+
+#### Phase 0 备份
+```bash
+sudo nvflash --protectinfo        # 期望 Protect: On / SR1: 0x8C
+sudo nvflash --save cmp-nvflash-backup.rom
+sha256sum cmp-nvflash-backup.rom  # 备份哈希,长期保留
+```
+
+#### Phase 1 打金窗 + 烧 devid 熔丝
+```bash
+# 用阶段 0 的 campaign 打金窗(DSOV=0, CRC=0x55)
+sudo env PYTHONPATH=$PWD/host python3 -m ga100vfi campaign --bdf <bdf> --adaptive --max-attempts 0
+
+# plan 里追加两条 devid 记录(空白行起点各卡不同,先 dry-run 看)
+sudo python3 utils/ga100_ff.py burn --plan plan.json --commit
+# 预期:row N readback 0x416A0942 OK,row N+1 readback 0x416A0982 OK;CRC 仍 0x55
+```
+
+#### 检查点 A:同窗口就地验证(不要冷启)
+Pico 发 `r`(PEX_RST low 100ms)复位后:
+- `lspci -nn -s <bdf>` 读到 `10de:20b5`
+- 影子寄存器 `DEVIDA/DEVIDB = 0x000020B5`
+- nvflash 的 ID 闸门放行(接受 A100 镜像)
+
+三条同时满足 = 熔丝生效。**所有操作同一窗口干完,不要"冷启确认中间态"**——每次冷启都是一次未知 POST,挂死就带内无救。
+
+#### Phase 2 刷 A100 ROM
+```bash
+# 先让内核 PCI 缓存跟上熔丝(否则 nvflash 报 Device ID mismatch)
+echo 1 | sudo tee /sys/bus/pci/devices/<bdf>/remove
+echo 1 | sudo tee /sys/bus/pci/rescan
+lspci -nn -s <bdf>                       # 期望 10de:20b5
+
+sudo nvflash --protectoff                # SR1: 0x8C → 0x00
+sudo nvflash --compare a100-80g.rom      # 可选:先看差异
+sudo nvflash -i 0 a100-80g.rom           # 喂 y 确认
+# 预期 Update successful / New version 92.00.A0.00.03;保护自动恢复
+```
+
+#### 检查点 B(必做):物理冷启 + 平台验收
+```bash
+lspci -nn -d 10de:                       # 10de:20b5
+nvidia-smi                               # A100 80GB PCIe / 81920 MiB / 92.00.A0.00.03
+wc -c /sys/bus/pci/devices/<bdf>/resource1   # 期望 ~137438953472(128 GiB)
+```
+- 通过 → 转换成功。
+- 卡 VGA 灯 / 认不到卡 → **平台 BAR 不够**,不是卡坏(见坑)。
+
+### 6.3 坑速查(按杀伤力)
+
+| 坑 | 现象 | 处理 |
+|---|---|---|
+| **128GB BAR 没开** | 卡 VGA 灯,POST 不过 | 开 Above 4G + MMIO ≥128G;先确认再烧 |
+| 内核缓存 ≠ 熔丝 | nvflash 报 Device ID mismatch | `remove` + `rescan` 后再刷 |
+| nvflash 5.692 无 `-4/-5/-6` 强制开关 | 传了 exit 5 | 唯一正路是先烧熔丝让 ID 匹配 |
+| 金窗参数错 | 单脉冲 DSOV=1;深脉冲 CRC=0x00 | 三脉冲浅坑 `v_dip=350~354` |
+| 没 dry-run 看 FF 占用 | 覆盖已有 FF 记录 | FF 不可擦除;先 dry-run,从空白行起追加 |
+| 动 PLM `0x8200F4/F8` | 锁死卡 | arm 链只碰白名单寄存器 |
+| 改 ROM subsys/board id | 破签名,GSP 拒 | A100 MAC 范围 0x2200–0x44600;别改 |
+| POST 挂死 | 起不来、不能 nvflash、不能打金窗 | **CH341A 离线写回 CMP ROM** → 反烧熔丝 |
+| 多次冷启 | 每次都一次挂死风险 | 同窗口干完,只在最后冷启一次 |
+| EEPROM 保护没恢复 | 上电 0xBADF3000 / RM init 失败 | 复查 `Protect: On / SR1: 0x8C` |
+| 转换后不是全血 A100 | SM=122 而非 108、Gen 不满速、ECC/NVLink 未启用 | 见下"残留" |
+
+### 6.4 残留(A100 转换 ≠ 全功能 A100)
+
+| 项 | 现状 | 补齐路径 |
+|---|---|---|
+| PCIe Gen/Width | 看插槽 | x16 槽 + Gen4 平台;Gen4 参考 `CMPGlitch/cmp_gen4.md` |
+| MAGIC_D | `0x14680000`(A100 是 `0x00200000`) | 补烧 block 47 → 0、block 46 bit13 → 0(Gen4 能力宣告) |
+| SM 数 | 122 SM(GSP floorsweep) | `cmpunlocker-a100-minimal --sm-unlock` |
+| FP32 限速 | 可能被 `SM_SPEED_SELECT` 限 | `cmpunlocker-a100-minimal` 常驻覆盖 |
+| ECC | 未启用 | InfoROM ECC object 不可用,暂无解 |
+| NVLink | 无 | U11 硬改 + ROM check bypass(见阶段 5.3) |
+
+### 6.5 回退(卡本身从没 brick)
+
+| 状态 | 回退 |
+|---|---|
+| 只烧了熔丝(CMP ROM 还在) | 冷启 → 反烧 block 37/38 回 `0x4184` → 冷启,**不需刷写器** |
+| 已刷 A100 ROM 且能启动 | 带内刷回 CMP 备份 → 反烧熔丝 → 冷启 |
+| 已刷 A100 ROM 且 POST 不过 | **CH341A 写回 CMP 备份** → 反烧熔丝 → 冷启 |
+
+**必须长期保留**:`cmp-nvflash-backup.rom` + 反烧命令 = 回家的路。
+
+### ✅ 达成判据
+- `lspci` 报 `10de:20b5` A100 80GB PCIe;`nvidia-smi` 报 81920 MiB / VBIOS `92.00.A0.00.03`
+- `/sys/.../resource1` ≈ 137 GB
+- 影子 `DEVIDA/DEVIDB = 0x20B5`,EEPROM `Protect: On / SR1: 0x8C`
+
+---
+
 ## 附录 A · 持久性速查
 | 层 | 持久性 | 以后要不要重做 |
 |---|---|---|
@@ -327,5 +445,6 @@ memory.total: 81920 MiB  ← 需阶段 5 显存几何后才满血
 ## 附录 C · 权威来源
 - 端到端真实记录(2026-11-15 跑通,81920MiB/126SM/NVLink0/Gen4 能力)
 - **CMPGlitch 记录**(本目录 `CMPGlitch/`,Gen4 x16 跑通 + 烧前备份/回滚 + PES/ROP_L2 红线 + 9 项烧前检查)
+- A100 转换实机复盘(2026-11-16,B450M-PRO S 跑通 10de:20b5 / 81920 MiB / VBIOS 92.00.A0.00.03)
 - Kate 博客(原理) / nvidia-open `dev_fuse.h`(寄存器权威定义)
 - 仓库:`pico-ga100vfi` / `cmp170hx-ffcalc`(打 issue#1 补丁) / `cmp-170hx-rir-burn-util` / `ga100vfi`;一体工具 `utils/ga100_ff.py`
