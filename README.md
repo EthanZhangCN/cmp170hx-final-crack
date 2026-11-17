@@ -396,11 +396,13 @@ wc -c /sys/bus/pci/devices/<bdf>/resource1   # 期望 ~137438953472(128 GiB)
 | 项 | 现状 | 补齐路径 |
 |---|---|---|
 | PCIe Gen/Width | 看插槽 | x16 槽 + Gen4 平台;Gen4 参考 `CMPGlitch/cmp_gen4.md` |
-| MAGIC_D | `0x14680000`(A100 是 `0x00200000`) | 补烧 block 47 → 0、block 46 bit13 → 0(Gen4 能力宣告) |
+| MAGIC_D | `0x14680000`(A100 是 `0x00200000`) | 补烧 block 47 → 0、block 46 bit13 → 0(Gen4 能力宣告)。⚠️ 见下方提示 |
 | SM 数 | 122 SM(GSP floorsweep) | `cmpunlocker-a100-minimal --sm-unlock` |
 | FP32 限速 | 可能被 `SM_SPEED_SELECT` 限 | `cmpunlocker-a100-minimal` 常驻覆盖 |
 | ECC | 未启用 | InfoROM ECC object 不可用,暂无解 |
 | NVLink | 无 | U11 硬改 + ROM check bypass(见阶段 5.3) |
+
+> ⚠️ **MAGIC_D 目标值 `0x00200000` 是社区汇总的实验性猜测,从未在真实 A100 上实测核对**(ffcalc 上游 `--a100` 在 CLI/计划输出/README 均显著标注;本表补烧方案与其数学等价:blk46→0x8000、blk47→0x0000)。**补烧前先想办法读到一张真 A100 的 `MAGIC_BITS_D` 现值交叉核对**——FF 不可擦,烧错这个 32 位字没有第二次机会。阶段 6 实测记录(2026-11-16)只烧了 devid(blk37/38),MAGIC_D 是残留未烧项。
 
 ### 6.5 回退(卡本身从没 brick)
 
