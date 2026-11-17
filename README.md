@@ -12,6 +12,7 @@
 |---|---|
 | `README.md`(本文件) / `部署清单.md` | 实操手册 + 部署清单 |
 | `utils/ga100_ff.py` | FF 解锁一体工具(plan/burn/verify,内置安全护栏) |
+| `utils/ff_burn_flow.py` | 主机侧一键流程编排(阶段 0.2→3 自动推进,断点续跑) |
 | `images/` | 手册配图 + spec 图源 + `render_spec.py` 渲染脚本 |
 | `pico-ga100vfi/` ⊂ | RP2350 打毛刺固件 + host CLI |
 | `ga100vfi/` ⊂ | 寄存器地图 + gpu0-capture |
@@ -230,6 +231,23 @@ armed 自检表(全对才动手):
 
 ### ✅ 达成判据
 - 每条记录 `readback == 写入值`;全程 `CRC=0x55 DSOV=0 EFP=1`;计划行全部烧完无报错。
+
+### 3.4 一键流程(可选,utils/ff_burn_flow.py)
+
+阶段 0.2 → 3 的主机侧命令(卸驱动→打金窗→出计划→dry-run+备份→真烧)可由单脚本自动推进,断点续跑,终点 = 记录全部烧写完成:
+
+```bash
+sudo python3 utils/ff_burn_flow.py run --bdf 0000:2f:00.0            # 自动推进到烧完
+sudo python3 utils/ff_burn_flow.py run --bdf 0000:2f:00.0 --single   # 含单行试烧(首次烧卡建议)
+python3 utils/ff_burn_flow.py status                                  # 随时看进度
+sudo python3 utils/ff_burn_flow.py reset                              # 换卡/重来前清状态
+```
+
+- 子命令:`run`(自动续跑)/ `prep` / `glitch` / `plan` / `precheck` / `single-burn` / `burn-all` / `status` / `reset`;状态在 `campaign_state/state.json`(已 gitignore)
+- 单行试烧**默认关闭**(省一轮冷启);`--single` 开启后流程为 试烧 → ⛔ 物理冷启 → 重跑 `run`(自动重打金窗、只烧剩余行)
+- 安全护栏:真烧两段确认(`Y` → 字面量 `BURN`,非交互需 `--yes`);金窗探针(DSOV/CRC)不在线即停;plan sha256 + bdf 防串卡;dry-run 解析 `★非空!`;烧失败置 `aborted` 绝不自动重试
+- 不改动现有工具,全部原样子进程调用;离线自检:`python3 utils/ff_burn_flow.py --self-test`
+- 冷启后的验收(阶段 4)不在脚本内,仍用 `verify` / `final_check.py`
 
 ---
 

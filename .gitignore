@@ -34,4 +34,5 @@ tools/ff_plan*.json
 snapshots/probe_*.json
 captures/
 campaigns/
+campaign_state/
 settings.json
