@@ -1,0 +1,16 @@
+[submodule "cmp170hx-ffcalc"]
+	path = cmp170hx-ffcalc
+	url = https://github.com/sayhellotojungle/cmp170hx-ffcalc
+	branch = master
+[submodule "ga100vfi"]
+	path = ga100vfi
+	url = https://github.com/kate-land/ga100vfi
+	branch = main
+[submodule "pico-ga100vfi"]
+	path = pico-ga100vfi
+	url = https://github.com/dalzyu/pico-ga100vfi
+	branch = main
+[submodule "cmp-170hx-rir-burn-util"]
+	path = cmp-170hx-rir-burn-util
+	url = https://github.com/evanrodgers/cmp-170hx-rir-burn-util
+	branch = main

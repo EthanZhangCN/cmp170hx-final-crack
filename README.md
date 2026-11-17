@@ -12,16 +12,16 @@
 |---|---|
 | `README.md`(本文件) / `部署清单.md` | 实操手册 + 部署清单 |
 | `utils/ga100_ff.py` | FF 解锁一体工具(plan/burn/verify,内置安全护栏) |
-| `utils/ffcalc-fix-issue1.patch` | ffcalc issue#1 修复补丁(cmp170hx-ffcalc 目录内副本已应用) |
 | `images/` | 手册配图 + spec 图源 + `render_spec.py` 渲染脚本 |
-| `pico-ga100vfi/` | RP2350 打毛刺固件 + host CLI |
-| `ga100vfi/` | 寄存器地图 + gpu0-capture |
-| `cmp170hx-ffcalc/` | 逐卡 FF 计算(交叉验证用) |
-| `cmp-170hx-rir-burn-util/` | CMD_WRITE 写机制参考 |
+| `pico-ga100vfi/` ⊂ | RP2350 打毛刺固件 + host CLI |
+| `ga100vfi/` ⊂ | 寄存器地图 + gpu0-capture |
+| `cmp170hx-ffcalc/` ⊂ | 逐卡 FF 计算(交叉验证用) |
+| `cmp-170hx-rir-burn-util/` ⊂ | CMD_WRITE 写机制参考 |
 | `cmpunlocker/` | 80GB 显存几何 + PCIe 补丁(须配 nvidia-open 615.71.09) |
 | `CMPGlitch/` | 完整记录快照:Gen4 跑通方案 + 备份/回滚工具链(驱动 610.43.03) |
 
-> 上游仓库保留各自的 `.git`,可独立 pull 更新;外层仓库将它们视为嵌套仓库,不重复跟踪其内容。
+> ⊂ = git submodule(见 `.gitmodules`),克隆后 `git submodule update --init` 拉取;日常更新用 `git submodule update --remote`。
+> ffcalc issue#1 防护已由上游 `ad45868` 起原生实现(ffrows.py 全量覆盖检查 + REFUSED 拒绝出计划),无需再打补丁;历史补丁见 `utils/ffcalc-fix-issue1.patch`(已废弃)。
 > `open-gpu-kernel-modules-615.71.09.tar.gz`(25M)不入库,克隆后手动放回根目录与 `cmpunlocker/driver/.build/`。
 
 ---
@@ -57,7 +57,7 @@ rust toolchain                             # 编 gpu0-capture(可选)
 python3 + pip                              # ffcalc
 gcc make linux-headers-$(uname -r)         # 编 ffprobe.ko 采集模块
 ```
-- 仓库(已备齐):`pico-ga100vfi`(打毛刺)、`cmp170hx-ffcalc`(算计划,**用打过 issue#1 补丁的版本**)、`cmp-170hx-rir-burn-util`(写机制参考)、`ga100vfi`(寄存器地图)。
+- 仓库(已备齐,submodule):`pico-ga100vfi`(打毛刺)、`cmp170hx-ffcalc`(算计划,issue#1 防护已入上游)、`cmp-170hx-rir-burn-util`(写机制参考)、`ga100vfi`(寄存器地图)。
 - **cmpunlocker**(软件层显存/PCIe)+ nvidia-open **615.71.09** 驱动(⚠️ 别用 615.78.08)。
 
 ### ✅ 达成判据
@@ -447,4 +447,4 @@ wc -c /sys/bus/pci/devices/<bdf>/resource1   # 期望 ~137438953472(128 GiB)
 - **CMPGlitch 记录**(本目录 `CMPGlitch/`,Gen4 x16 跑通 + 烧前备份/回滚 + PES/ROP_L2 红线 + 9 项烧前检查)
 - A100 转换实机复盘(2026-11-16,B450M-PRO S 跑通 10de:20b5 / 81920 MiB / VBIOS 92.00.A0.00.03)
 - Kate 博客(原理) / nvidia-open `dev_fuse.h`(寄存器权威定义)
-- 仓库:`pico-ga100vfi` / `cmp170hx-ffcalc`(打 issue#1 补丁) / `cmp-170hx-rir-burn-util` / `ga100vfi`;一体工具 `utils/ga100_ff.py`
+- 仓库:`pico-ga100vfi` / `cmp170hx-ffcalc` / `cmp-170hx-rir-burn-util` / `ga100vfi`(均为 submodule);一体工具 `utils/ga100_ff.py`

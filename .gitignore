@@ -1,8 +1,4 @@
-# ---- 上游仓库(保留各自 .git 可 pull,不入外层库) ----
-pico-ga100vfi/
-ga100vfi/
-cmp170hx-ffcalc/
-cmp-170hx-rir-burn-util/
+# ---- 上游仓库已改为 git submodule,见 .gitmodules ----
 
 # ---- 大型驱动源码 tar:仅留本地副本,不入库 ----
 # 根目录副本(部署清单引用);构建缓存副本见 cmpunlocker/driver/.build/
