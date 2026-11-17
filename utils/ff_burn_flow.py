@@ -125,10 +125,18 @@ def _probe_plan(args) -> str:
     return fake
 
 
+def _env_hint() -> None:
+    """Pico 工具链缺失时提示环境脚本(只提示,不阻塞:glitch 失败会自然暴露)。"""
+    if shutil.which("arm-none-eabi-gcc") is None:
+        print("  ℹ 检测到交叉工具链缺失——若 Pico 固件未编译,"
+              "先跑:python3 utils/ff_env_setup.py check")
+
+
 # -------------------------------------------------------------- phases ----
 def phase_prep(args, st: dict) -> bool:
     """卸驱动 + 幂等写黑名单。返回 True=阶段完成。"""
     print("== prep: 卸 nvidia 栈 ==")
+    _env_hint()
     subprocess.run(["systemctl", "stop", "lightdm", "lactd"], capture_output=True)
     subprocess.run(["pkill", "-x", "Xorg"], capture_output=True)
     time.sleep(1)

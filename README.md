@@ -12,6 +12,7 @@
 |---|---|
 | `README.md`(本文件) / `部署清单.md` | 实操手册 + 部署清单 |
 | `utils/ga100_ff.py` | FF 解锁一体工具(plan/burn/verify,内置安全护栏) |
+| `utils/ff_env_setup.py` | 主机侧环境准备(工具链/pico-sdk/固件编译/BOOTSEL 烧写/host CLI) |
 | `utils/ff_burn_flow.py` | 主机侧一键流程编排(阶段 0.2→3 自动推进,断点续跑) |
 | `images/` | 手册配图 + spec 图源 + `render_spec.py` 渲染脚本 |
 | `pico-ga100vfi/` ⊂ | RP2350 打毛刺固件 + host CLI |
@@ -59,6 +60,11 @@ python3 + pip                              # ffcalc
 gcc make linux-headers-$(uname -r)         # 编 ffprobe.ko 采集模块
 ```
 - 仓库(已备齐,submodule):`pico-ga100vfi`(打毛刺)、`cmp170hx-ffcalc`(算计划,issue#1 防护已入上游)、`cmp-170hx-rir-burn-util`(写机制参考)、`ga100vfi`(寄存器地图)。
+- **一键环境准备**(apt 工具链 → pico-sdk → 固件编译 → BOOTSEL 烧写 → host CLI,幂等):
+  ```bash
+  python3 utils/ff_env_setup.py check                    # 只检测(无需 root)
+  sudo python3 utils/ff_env_setup.py all --board pico2_w # 全流程(板型必填:pico2_w/pico2)
+  ```
 - **cmpunlocker**(软件层显存/PCIe)+ nvidia-open **615.71.09** 驱动(⚠️ 别用 615.78.08)。
 
 ### ✅ 达成判据
@@ -234,7 +240,7 @@ armed 自检表(全对才动手):
 
 ### 3.4 一键流程(可选,utils/ff_burn_flow.py)
 
-阶段 0.2 → 3 的主机侧命令(卸驱动→打金窗→出计划→dry-run+备份→真烧)可由单脚本自动推进,断点续跑,终点 = 记录全部烧写完成:
+前置:Pico 固件与环境用 `utils/ff_env_setup.py` 准备(见阶段 −1)。本脚本从卸驱动开始,把阶段 0.2 → 3 的主机侧命令(卸驱动→打金窗→出计划→dry-run+备份→真烧)自动推进,断点续跑,终点 = 记录全部烧写完成:
 
 ```bash
 sudo python3 utils/ff_burn_flow.py run --bdf 0000:2f:00.0            # 自动推进到烧完
