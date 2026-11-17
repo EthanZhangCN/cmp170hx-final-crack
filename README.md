@@ -120,8 +120,8 @@ EOF
 ```bash
 pip install -e pico-ga100vfi/host/
 sudo env PYTHONPATH=$PWD/host python3 -m ga100vfi campaign \
-  --bdf 0000:2f:00.0 --adaptive --max-attempts 0 --restore-wait 0.4
-# --bdf 换成你的卡地址
+  --bdf 0000:2f:00.0 --adaptive --budget 500 --restore-wait 0.4
+# --bdf 换成你的卡地址;--budget 为总发数上限(默认 500,无 0=无限)
 ```
 工具自动:在 PEX_RST 释放沿打浅三脉冲 → 读 BAR0 判 5 项 → 没过按 6.25mV 调 `v_dip` 重打。实测中位 ~5–16 发、几秒即中。
 
@@ -338,7 +338,7 @@ sha256sum cmp-nvflash-backup.rom  # 备份哈希,长期保留
 #### Phase 1 打金窗 + 烧 devid 熔丝
 ```bash
 # 用阶段 0 的 campaign 打金窗(DSOV=0, CRC=0x55)
-sudo env PYTHONPATH=$PWD/host python3 -m ga100vfi campaign --bdf <bdf> --adaptive --max-attempts 0
+sudo env PYTHONPATH=$PWD/host python3 -m ga100vfi campaign --bdf <bdf> --adaptive --budget 500
 
 # plan 里追加两条 devid 记录(空白行起点各卡不同,先 dry-run 看)
 sudo python3 utils/ga100_ff.py burn --plan plan.json --commit
