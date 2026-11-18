@@ -24,18 +24,17 @@
 | `CMPGlitch/` | 完整记录快照:Gen4 跑通方案 + 备份/回滚工具链(驱动 610.43.03) |
 
 > ⊂ = git submodule(见 `.gitmodules`),克隆后 `git submodule update --init` 拉取;日常更新用 `git submodule update --remote`。
-> ffcalc issue#1 防护已由上游 `ad45868` 起原生实现(ffrows.py 全量覆盖检查 + REFUSED 拒绝出计划),无需再打补丁;历史补丁见 `utils/ffcalc-fix-issue1.patch`(已废弃)。
+> ffcalc issue#1 防护已入上游,submodule 自带;旧补丁 `utils/ffcalc-fix-issue1.patch` 仅留档。
 > `open-gpu-kernel-modules-615.71.09.tar.gz`(25M)不入库,克隆后手动放回根目录与 `cmpunlocker/driver/.build/`。
 
 ---
 
 > 对象:CMP 170HX(8GB 版实际板载 ~80GB HBM,70 SM,PCIe Gen1)。
 > 目标:**81920 MiB 显存 / 126 SM / PCIe Gen4 能力 / NVLink**。
-> 本手册 = 实物接线 + 打毛刺 + 逐卡计算 + 烧 FF + 驱动层,端到端已在真实卡跑通(2026-11-15)。
 > ⛔ **FF 烧写物理不可逆,烧错即报废。每个阶段都有"验证关",不过关不进下一阶段。**
 > 阅读方式:按阶段顺序做;每阶段末有"✅ 达成判据",满足才继续。
 
-**最速路径(懒人版)**:环境 + 全流程各一条命令,见 [阶段 −1 一键环境准备](#阶段-1--准备硬件软件环境) 与 [阶段 3.4 一键烧录流程](#34-一键流程可选utilsff_burn_flowpy):
+**最速路径**:环境 + 全流程各一条命令,见 [阶段 −1 一键环境准备](#阶段-1--准备硬件软件环境) 与 [阶段 3.4 一键烧录流程](#34-一键流程可选utilsff_burn_flowpy):
 ```bash
 python3 utils/ff_env_setup.py check                     # ① 环境检测(无 root)
 sudo python3 utils/ff_env_setup.py all --board pico2_w  # ② 环境全装+编固件+烧 Pico
@@ -52,8 +51,8 @@ sudo python3 utils/ff_burn_flow.py run --bdf 0000:2f:00.0 --single  # ③ 打毛
 - [阶段 1 · 只读采集 + 逐卡算 FF 计划](#阶段-1--只读采集--逐卡算-ff-计划)
 - [阶段 2 · 烧前预演(强制 dry-run)](#阶段-2--烧前预演强制-dry-run)
 - [阶段 3 · 拿烧写权限(arm)+ 物理烧 FF(永久!)](#阶段-3--拿烧写权限arm-物理烧-ff永久)
-  - [3.0 烧前备份](#30-烧前备份强烈建议cmpglitch-经验)
-  - [3.3 血泪红线](#33-血泪红线实测踩坑)
+  - [3.0 烧前备份](#30-烧前备份强烈建议)
+  - [3.3 红线(实测踩坑)](#33-红线实测踩坑)
   - [3.4 一键流程(ff_burn_flow.py)](#34-一键流程可选utilsff_burn_flowpy)
 - [阶段 4 · 断电冷启 + 功能验收](#阶段-4--断电冷启--功能验收)
 - [阶段 5 · 软件层:满血显存 + 实链提速](#阶段-5--软件层满血显存--实链提速)
@@ -75,8 +74,7 @@ sudo python3 utils/ff_burn_flow.py run --bdf 0000:2f:00.0 --single  # ③ 打毛
 
 ## 阶段 −1 · 准备(硬件/软件/环境)
 
-### 目的
-把"打毛刺 + 读卡 + 写 fuse + 驱动"所需的软硬件全部备齐。
+> 目的:备齐打毛刺 + 读卡 + 写 fuse + 驱动所需软硬件。
 
 ### 硬件清单
 | 项 | 说明 |
@@ -88,20 +86,12 @@ sudo python3 utils/ff_burn_flow.py run --bdf 0000:2f:00.0 --single  # ③ 打毛
 | Linux 主机 | 装这张卡、能 sudo;**根端口决定 PCIe 上限**(要 Gen4 需主板/插槽支持) |
 
 ### 软件/工具链(在主机上装)
-```bash
-# 固件编译
-pico-sdk                                   # 编 Pico 固件
-# 只读采集/计算
-rust toolchain                             # 编 gpu0-capture(可选)
-python3 + pip                              # ffcalc
-gcc make linux-headers-$(uname -r)         # 编 ffprobe.ko 采集模块
-```
-- 仓库(已备齐,submodule):`pico-ga100vfi`(打毛刺)、`cmp170hx-ffcalc`(算计划,issue#1 防护已入上游)、`cmp-170hx-rir-burn-util`(写机制参考)、`ga100vfi`(寄存器地图)。
 - **一键环境准备**(apt 工具链 → pico-sdk → 固件编译 → BOOTSEL 烧写 → host CLI,幂等):
   ```bash
   python3 utils/ff_env_setup.py check                    # 只检测(无需 root)
   sudo python3 utils/ff_env_setup.py all --board pico2_w # 全流程(板型必填:pico2_w/pico2)
   ```
+- 脚本未覆盖、仅交叉验证/采集需要:`rust`(gpu0-capture,可选)、`gcc make linux-headers-$(uname -r)`(ffprobe.ko)。
 - **cmpunlocker**(软件层显存/PCIe)+ nvidia-open **615.71.09** 驱动(⚠️ 别用 615.78.08)。
 
 ### ✅ 达成判据
@@ -167,13 +157,13 @@ sudo env PYTHONPATH=$PWD/host python3 -m ga100vfi campaign \
   --bdf 0000:2f:00.0 --adaptive --budget 500 --restore-wait 0.4
 # --bdf 换成你的卡地址;--budget 为总发数上限(默认 500,无 0=无限)
 ```
-工具自动:在 PEX_RST 释放沿打浅三脉冲 → 读 BAR0 判 5 项 → 没过按 6.25mV 调 `v_dip` 重打。实测中位 ~5–16 发、几秒即中。
+自动闭环:打浅三脉冲 → 判 5 项 → 未中自动调压重打。实测中位 ~5–16 发、几秒即中。
 
 **打毛刺→判定流程**(软件自动闭环,无需示波器):
 
 ![判定流程](images/judge_flow.png)
 
-**实测三脉冲波形**(命令→电压滞后约 46µs,已用 delay 补偿;来自 Kate 单卡 100 发实测):
+**实测三脉冲波形**(命令→电压滞后约 46µs,已用 delay 补偿):
 
 ![实测三脉冲波形](images/nvvdd-waveform.png)
 
@@ -192,14 +182,14 @@ FPF 行可读 / DSOV 可写回
 ## 阶段 1 · 只读采集 + 逐卡算 FF 计划
 
 > 目的:读出**这张卡自己**的 fuse 现状和缺陷掩码,算出"该烧哪几行、烧什么值"。**只读,不改卡。**
-> 用本目录一体工具 `utils/ga100_ff.py`(内置 issue#1 防呆 + 按本卡缺陷算目标)。
+> 工具:`utils/ga100_ff.py` plan(按本卡缺陷自动算目标)。
 
 ```bash
 # 设 PYTHONPATH 指向 pico-ga100vfi 的 host(工具靠它读卡)
 export PYTHONPATH=$PWD/pico-ga100vfi/host
 sudo python3 utils/ga100_ff.py plan --bdf 0000:2f:00.0 -o plan.json
 ```
-工具做:读金窗状态 + 全部 FF 物理行(222–487) + 本卡 `_DEFECTIVE` 缺陷掩码 → 按"**目标=缺陷(只禁真坏的)**"算出每条 FF 记录,从已用行之后追加空白行。**只读,不写。**
+工具读金窗状态 + 全部 FF 物理行(222–487)+ 本卡缺陷掩码,按"**目标=缺陷(只禁真坏的)**"出计划,从已用行之后追加。**只读,不写。**
 
 > ⚠️ 若 `plan.json` 里 `ff_rows` 为空(没枚举到物理行),工具会**拒绝出计划**(防止像 ffcalc issue#1 那样从行 222 起排、覆盖已有记录)。
 
@@ -230,44 +220,30 @@ sudo python3 utils/ga100_ff.py burn --plan plan.json        # 默认 dry-run,不
 > 目的:在金窗内依次打开烧写门,把计划逐条写进空白 OTP 行。**这是唯一永久、烧错即砖的步骤。**
 > 用 `utils/ga100_ff.py burn --commit`,它内置下面的 arm 序列 + 逐条校验(每步带断言,失败即停)。
 
-### 3.0 烧前备份(强烈建议,CMPGlitch 经验)
-烧前先把整张卡的 fuse 现状导出存档,并准备一份"恢复计划"(用各 block 的 old_data 生成),万一烧错还能靠"同 block 后写覆盖"补一条恢复记录:
+### 3.0 烧前备份(强烈建议)
+烧前导出整卡 fuse 现状存档,烧错时可用"同 block 后写覆盖"补恢复记录:
 ```bash
-# 备份全行 + 影子寄存器(只读)
-sudo python3 CMPGlitch/tools/ff_dump.py --bdf <bdf> -o ff_backup.json
+sudo python3 CMPGlitch/tools/ff_dump.py --bdf <bdf> -o ff_backup.json   # 只读
 ```
-> FF 是"后写赢":烧错不至于彻底无救,可用恢复记录把有效值改回去(但物理行已消耗,不可逆的是"行被用掉",不是"值改不回")。
+> FF 是"后写赢":烧错可改回有效值,但物理行已消耗——不可逆的是"行被用掉",不是"值改不回"。
 
 ```bash
 sudo python3 utils/ga100_ff.py burn --plan plan.json --commit     # 真烧(永久!)
 ```
 
-### 3.1 arm 序列(工具自动执行,每步带断言)
-```
-① 断言金窗:DSOV==0 且 CRC==0x55
-② FUSECTRL=3 (SENSE_CTRL) → wait_idle → 断言 EFP==1 且 DSOV 仍==0
-③ EN_SW_OVERRIDE(0x00820040)=1 → 读回==1
-④ SBFE(0x00821108)=0 → 读回==0
-⑤ WDATA_WR_SECURE(0x0082048C)=0 → 读回==0
-```
-armed 自检表(全对才动手):
-`FUSECTRL=0xE0040000  CRC=0x55  EFP=1  DSOV=0  SBFE=0  WDATA_SEC=0  EN_SW=1`
-
-### 3.2 烧写(工具逐条执行)
-```
-读行(空行检查==0) → 写 FUSEWDATA(0x0082000C) → FUSECTRL=CMD_WRITE → 回读校验
-```
+### 3.1 arm + 烧写(工具自动执行,每步带断言)
+- arm 序列:断言金窗(DSOV==0/CRC==0x55)→ SENSE_CTRL → EN_SW_OVERRIDE=1 → SBFE=0 → WDATA_WR_SECURE=0,每步读回断言。
+- 每条记录:写前空行检查 → 写 FUSEWDATA(`0x0082000C`)→ CMD_WRITE → 回读校验 → 复读 CRC/DSOV/EFP。
 - FF 区 row 222–487;**控制行 0–3 永远禁写**;空行=读回 `0x0`。
-- **逐条:空行检查 → 写 → CMD_WRITE → 回读**;每条后复读 `CRC/DSOV/EFP` 确认没被带坏。
-- **先单行试烧**:计划里挑一条(如 fbp)单独烧 → 断电冷启 → `CRC==0x55` → 再烧全量。
+- **先单行试烧**:挑一条(如 fbp)单独烧 → 断电冷启 → `CRC==0x55` → 再烧全量。
 - **PCIe 记录最危险**(写错可能掉总线),放最后、一次烧齐一次验证。
 
-### 3.3 血泪红线(实测踩坑)
+### 3.3 红线(实测踩坑)
 1. **写口是 `0x0082000C`,不是 `0x00820008`**(读口)。写错端口会"静默成功、回读还是 0、记录丢失"。
-2. **绝不直接写 PLM 寄存器 `0x008200F4/F8/FC`**。注意区分两种做法:
-   - ❌ **直接写 PLM=0xFFFFFFFF**(社区 `ffburn.py` 的做法)→ 把熔丝控制器写死(FUSECTRL 读 0、CRC=0、影子全 0),只能 PEX_RST 救。
-   - ✅ **清 `WDATA_WR_SECURE(0x0082048C)=0`** → PLM **自动**全开为 0xFFFFFFFF(这是正确路径,CMPGlitch 与 zhiyu 都这么做)。PLM 是"结果",不是"写入对象"。
-3. **FF 烧写必须 `DEBUGCTRL.RWL=0`**(主阵列)。RWL=1 会把写路由到 **RIR macro**,可能卡死 die;CMPGlitch 的 ff_burn 写前会主动清 RWL。⚠️ 与 zhiyu 记录"RWL 不用置"一致——主阵列烧写**不要碰 RWL**。
+2. **绝不直接写 PLM 寄存器 `0x008200F4/F8/FC`**:
+   - ❌ 直接写 PLM=0xFFFFFFFF → 熔丝控制器写死(FUSECTRL 读 0、CRC=0、影子全 0),只能 PEX_RST 救。
+   - ✅ 正确路径:**清 `WDATA_WR_SECURE(0x0082048C)=0`**,PLM 自动全开。PLM 是"结果",不是"写入对象"。
+3. **FF 烧写必须 `DEBUGCTRL.RWL=0`**(主阵列)。RWL=1 会把写路由到 **RIR macro**,可能卡死 die——主阵列烧写**不要碰 RWL**。
 4. **金窗易失**:任何 PEX_RST/驱动加载都会丢;一个金窗内烧完。
 5. 某些机器 `reboot` 会挂死 → 一律**物理断电冷启**。
 6. **烧不全=PES/ROP_L2 漏烧会 GSP 启动失败**(见阶段 4 红线)。
@@ -277,7 +253,7 @@ armed 自检表(全对才动手):
 
 ### 3.4 一键流程(可选,utils/ff_burn_flow.py)
 
-前置:Pico 固件与环境用 `utils/ff_env_setup.py` 准备(见阶段 −1)。本脚本从卸驱动开始,把阶段 0.2 → 3 的主机侧命令(卸驱动→打金窗→出计划→dry-run+备份→真烧)自动推进,断点续跑,终点 = 记录全部烧写完成:
+前置:环境用 `utils/ff_env_setup.py` 备好(见阶段 −1)。本脚本自动推进阶段 0.2 → 3 的主机侧命令(卸驱动→打金窗→出计划→dry-run+备份→真烧),断点续跑,终点 = 记录全部烧写完成:
 
 ```bash
 sudo python3 utils/ff_burn_flow.py run --bdf 0000:2f:00.0            # 自动推进到烧完
@@ -286,11 +262,10 @@ python3 utils/ff_burn_flow.py status                                  # 随时�
 sudo python3 utils/ff_burn_flow.py reset                              # 换卡/重来前清状态
 ```
 
-- 子命令:`run`(自动续跑)/ `prep` / `glitch` / `plan` / `precheck` / `single-burn` / `burn-all` / `status` / `reset`;状态在 `campaign_state/state.json`(已 gitignore)
-- 单行试烧**默认关闭**(省一轮冷启);`--single` 开启后流程为 试烧 → ⛔ 物理冷启 → 重跑 `run`(自动重打金窗、只烧剩余行)
-- 安全护栏:真烧两段确认(`Y` → 字面量 `BURN`,非交互需 `--yes`);金窗探针(DSOV/CRC)不在线即停;plan sha256 + bdf 防串卡;dry-run 解析 `★非空!`;烧失败置 `aborted` 绝不自动重试
-- 不改动现有工具,全部原样子进程调用;离线自检:`python3 utils/ff_burn_flow.py --self-test`
-- 冷启后的验收(阶段 4)不在脚本内,仍用 `verify` / `final_check.py`
+- 子命令:`run`(自动续跑)/ `prep` / `glitch` / `plan` / `precheck` / `single-burn` / `burn-all` / `status` / `reset`;状态存 `campaign_state/`(已 gitignore)
+- 单行试烧默认关闭(省一轮冷启);`--single` 开启后:试烧 → ⛔ 物理冷启 → 重跑 `run`(自动重打金窗、只烧剩余行)
+- 护栏:真烧两段确认(`Y` → 字面量 `BURN`,非交互需 `--yes`);金窗探针不在线即停;plan sha256 + bdf 防串卡;烧失败置 `aborted` 绝不自动重试
+- 自检:`python3 utils/ff_burn_flow.py --self-test`;冷启后验收(阶段 4)仍用 `verify` / `final_check.py`
 
 ---
 
@@ -335,7 +310,7 @@ memory.total: 81920 MiB  ← 需阶段 5 显存几何后才满血
 熔丝只"允许"(`LnkCap2` 变 16GT/s),实链被固件钉死。限制分三层:FF 熔丝 / IFF+DevInit PHY / VBIOS 的 Gen4 抑制块。
 
 **Gen3(CMPGlitch 实测跑通,LnkSta 0x1083,H2D/D2H ~6.6 GB/s,约 1.97×):**
-- 三层叠加:FF 熔丝(清 `DISABLE_GEN3_SPEED`、boot 策略)+ 驱动 post-GSP 补丁(`CmpGen3=1`,插在 `kgspBootstrap_TU102` 的 BooterLoad 成功**之后**——固件会把更早的写 re-clamp 掉)+ 经 RM 分阶训练 Gen1→2→3。
+- 三层叠加:FF 熔丝(清 `DISABLE_GEN3_SPEED`、boot 策略)+ 驱动 post-GSP 补丁(`CmpGen3=1`,时序细节见 `CMPGlitch/cmp_gen3.md`)+ RM 分阶训练 Gen1→2→3。
 - **大坑**:`LINK_CONFIG_0[19:18]` 是**反转编码**(1=Gen3),与 config-space LnkCtl2(3=Gen3)**相反**,写反会坠链。
 
 **Gen4(CMPGlitch 实测跑通 Gen4 x16,LnkSta 0x1104,带宽 24.7/26.3 GB/s):**
@@ -412,7 +387,7 @@ Pico 发 `r`(PEX_RST low 100ms)复位后:
 - 影子寄存器 `DEVIDA/DEVIDB = 0x000020B5`
 - nvflash 的 ID 闸门放行(接受 A100 镜像)
 
-三条同时满足 = 熔丝生效。**所有操作同一窗口干完,不要"冷启确认中间态"**——每次冷启都是一次未知 POST,挂死就带内无救。
+三条同时满足 = 熔丝生效。**所有操作同一窗口干完**——每次冷启都是一次未知 POST,挂死就带内无救。
 
 #### Phase 2 刷 A100 ROM
 ```bash
@@ -463,7 +438,7 @@ wc -c /sys/bus/pci/devices/<bdf>/resource1   # 期望 ~137438953472(128 GiB)
 | ECC | 未启用 | InfoROM ECC object 不可用,暂无解 |
 | NVLink | 无 | U11 硬改 + ROM check bypass(见阶段 5.3) |
 
-> ⚠️ **MAGIC_D 目标值 `0x00200000` 是社区汇总的实验性猜测,从未在真实 A100 上实测核对**(ffcalc 上游 `--a100` 在 CLI/计划输出/README 均显著标注;本表补烧方案与其数学等价:blk46→0x8000、blk47→0x0000)。**补烧前先想办法读到一张真 A100 的 `MAGIC_BITS_D` 现值交叉核对**——FF 不可擦,烧错这个 32 位字没有第二次机会。阶段 6 实测记录(2026-11-16)只烧了 devid(blk37/38),MAGIC_D 是残留未烧项。
+> ⚠️ **MAGIC_D 目标值 `0x00200000` 是社区实验性猜测,从未在真实 A100 实测核对**(与 ffcalc 上游 `--a100` 数学等价:blk46→0x8000、blk47→0x0000)。**补烧前先读到一张真 A100 的 `MAGIC_BITS_D` 现值交叉核对**——FF 不可擦,烧错这个 32 位字没有第二次机会。阶段 6 实测(2026-11-16)只烧了 devid(blk37/38),MAGIC_D 未烧。
 
 ### 6.5 回退(卡本身从没 brick)
 
