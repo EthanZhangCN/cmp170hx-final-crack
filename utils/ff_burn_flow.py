@@ -47,6 +47,7 @@ BLACKLIST_BODY = (
 # ga100_ff.py FIELDS 的 block 反查:优先挑 chain1 非关键记录做试烧。
 # fbp(FBP_DISABLE, chain1 blk35 附近)是最温和的候选;绝不选 chain2(PCIe)。
 SAFE_TEST_FIELD_BLOCKS = {"fbp", "fbpa", "fbio"}
+FF_FIRST_ROW = 222  # FF 区首行(probe 假记录指向已用行,绝不指向空行)
 
 
 class FlowError(Exception):
@@ -95,6 +96,10 @@ def sha256_file(path: str) -> str:
 def run_cmd(cmd: list, env: dict | None = None, sudo_needed: bool = True) -> tuple:
     """返回 (exit, stdout, stderr)。脚本自身通常已以 sudo 运行。"""
     e = dict(os.environ)
+    # ga100_ff.py 需 import pico-ga100vfi 的 ga100vfi.bar0;sudо 下
+    # pip --user 装的包不可见,必须显式给 PYTHONPATH(plan/burn/probe 全依赖)
+    e["PYTHONPATH"] = GA100VFI_HOST + os.pathsep + e.get("PYTHONPATH", "") \
+        if e.get("PYTHONPATH") else GA100VFI_HOST
     if env:
         e.update(env)
     p = subprocess.run(cmd, capture_output=True, text=True, env=e, cwd=REPO_ROOT)
@@ -120,7 +125,13 @@ def _probe_plan(args) -> str:
     os.makedirs(args.state_dir, exist_ok=True)
     fake = os.path.join(args.state_dir, "probe_empty.json")
     with open(fake, "w", encoding="utf-8") as f:
-        json.dump({"records": [], "expect": {"crc": "0x55", "dsov": "0x0"},
+        # records 不能为空:ga100_ff burn 对空 records 直接 ABORT,打不出
+        # DSOV/CRC 行。放一条指向已用行(如 222)的假记录,读回非 0 也无妨
+        # ——probe 只解析 DSOV/CRC 行,不执行写入(dry-run)。
+        json.dump({"records": [{"row": FF_FIRST_ROW, "record": "0x00000000",
+                                "chain": 1, "block": 0, "old": "0x0",
+                                "new": "0x0"}],
+                   "expect": {"crc": "0x55", "dsov": "0x0"},
                    "ff_rows": {}, "bdf": args.bdf}, f)
     return fake
 
@@ -140,7 +151,12 @@ def phase_prep(args, st: dict) -> bool:
     subprocess.run(["systemctl", "stop", "lightdm", "lactd"], capture_output=True)
     subprocess.run(["pkill", "-x", "Xorg"], capture_output=True)
     time.sleep(1)
+    lsmod_out = subprocess.run(["lsmod"], capture_output=True, text=True).stdout
     for mod in ("nvidia_uvm", "nvidia_drm", "nvidia_modeset", "nvidia"):
+        # 只卸真正加载着的。没装 nvidia 驱动的机器 modprobe -r 会报
+        # "Module not found"(rc=1),那是目标状态而非故障,不应中断流程
+        if not re.search(rf"^{mod}\b", lsmod_out, re.M):
+            continue
         p = subprocess.run(["modprobe", "-r", mod], capture_output=True, text=True)
         if p.returncode != 0:
             raise FlowError(
@@ -590,26 +606,29 @@ def main():
         prog="ff_burn_flow",
         description="CMP 170HX FF 烧录主机侧一键流程(prep→glitch→plan→precheck→burn-all);"
                     "终点=记录全部烧写完成。冷启验收用 ga100_ff.py verify / final_check.py。")
-    ap.add_argument("--bdf", default="0000:2f:00.0")
-    ap.add_argument("--state-dir", default=os.path.join(REPO_ROOT, "campaign_state"))
-    ap.add_argument("--single", action="store_true",
-                    help="启用单行试烧环节(试烧→人工冷启→续跑烧剩余);默认跳过")
-    ap.add_argument("--test-row", type=int, default=None,
-                    help="single-burn 指定试烧行(默认自动选 chain1 温和记录)")
-    ap.add_argument("--budget", type=int, default=500, help="campaign 总发数")
-    ap.add_argument("--yes", action="store_true",
-                    help="跳过烧写两段交互确认(仅限受控/自动化环境)")
     ap.add_argument("--self-test", action="store_true", help="离线自检,不碰硬件")
+    # 选项同时挂主 parser 与每个子命令(parents+SUPPRESS):README 里
+    # `run --bdf ...` 的写法(选项在子命令后)才可用,SUPPRESS 保证不覆盖默认值
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--bdf", default=argparse.SUPPRESS)
+    common.add_argument("--state-dir", default=argparse.SUPPRESS)
+    common.add_argument("--single", action="store_true", default=argparse.SUPPRESS,
+                        help="启用单行试烧环节(试烧→人工冷启→续跑烧剩余);默认跳过")
+    common.add_argument("--test-row", type=int, default=argparse.SUPPRESS,
+                        help="single-burn 指定试烧行(默认自动选 chain1 温和记录)")
+    common.add_argument("--budget", type=int, default=argparse.SUPPRESS,
+                        help="campaign 总发数")
+    common.add_argument("--yes", action="store_true", default=argparse.SUPPRESS,
+                        help="跳过烧写两段交互确认(仅限受控/自动化环境)")
+    ap.set_defaults(bdf="0000:2f:00.0",
+                    state_dir=os.path.join(REPO_ROOT, "campaign_state"),
+                    single=False, test_row=None, budget=500, yes=False)
     sub = ap.add_subparsers(dest="cmd")
-    sub.add_parser("run", help="自动从断点推进")
-    sub.add_parser("prep")
-    sub.add_parser("glitch")
-    sub.add_parser("plan")
-    sub.add_parser("precheck")
-    sub.add_parser("single-burn")
-    sub.add_parser("burn-all")
-    sub.add_parser("status", help="打印当前 state.json")
-    sub.add_parser("reset", help="删除 state.json(plan/备份保留)")
+    for name, h in (("run", "自动从断点推进"), ("prep", ""), ("glitch", ""),
+                    ("plan", ""), ("precheck", ""), ("single-burn", ""),
+                    ("burn-all", ""), ("status", "打印当前 state.json"),
+                    ("reset", "删除 state.json(plan/备份保留)")):
+        sub.add_parser(name, parents=[common], help=h)
     args = ap.parse_args()
 
     if args.self_test:
