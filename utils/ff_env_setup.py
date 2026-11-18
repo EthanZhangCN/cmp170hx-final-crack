@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import pwd
 import shutil
 import subprocess
 import sys
@@ -33,9 +34,26 @@ PICO_SDK_URL = "https://github.com/raspberrypi/pico-sdk.git"
 RP2350_MOUNT = "RP2350"
 
 APT_PACKAGES = ["cmake", "ninja-build", "gcc-arm-none-eabi"]
-TOOL_PROBES = {"cmake": "cmake", "ninja": "ninja", "arm-none-eabi-gcc": "gcc-arm-none-eabi"}
+# g++ 是 pico-sdk 编 picotool(elf2uf2 用)所需的主机 C++ 编译器
+TOOL_PROBES = {"cmake": "cmake", "ninja": "ninja-build",
+               "arm-none-eabi-gcc": "gcc-arm-none-eabi", "g++": "g++",
+               "pip3": "python3-pip"}
 BOARD_OPTS = {"pico2_w": ("pico2_w", "BOARD_RP2350B"),
               "pico2": ("pico2", "BOARD_RP2350A")}
+
+
+def real_home() -> str:
+    """sudo 下也返回真实用户(而非 root)的家目录.
+
+    SDK/构建产物属于普通用户;sudo all 时若用 root 的 HOME,会把 SDK
+    克隆到 /root,与用户此前以自身身份配置的 build 缓存混用两份 SDK。"""
+    user = os.environ.get("SUDO_USER")
+    if user:
+        try:
+            return pwd.getpwnam(user).pw_dir
+        except KeyError:
+            pass
+    return os.path.expanduser("~")
 
 
 class EnvError(Exception):
@@ -106,21 +124,31 @@ def step_tools() -> None:
 def step_sdk(sdk_dir: str) -> None:
     print(f"== sdk: pico-sdk @ {sdk_dir} ==")
     if os.path.isfile(os.path.join(sdk_dir, "pico_sdk_init.cmake")):
-        print("  已存在,跳过")
-        return
-    if os.path.exists(sdk_dir):
+        print("  已存在")
+    elif os.path.exists(sdk_dir):
         raise EnvError(
             f"{sdk_dir} 已存在但缺少 pico_sdk_init.cmake(不完整的 clone?)。\n"
             f"  → 确认无自定义内容后删除该目录,重跑本步")
-    parent = os.path.dirname(sdk_dir.rstrip("/"))
-    os.makedirs(parent, exist_ok=True)
-    try:
-        sh(["git", "clone", "--depth", "1", PICO_SDK_URL, sdk_dir])
-    except EnvError:
-        raise EnvError(
-            "clone pico-sdk 失败(网络?)。手动:\n"
-            f"  git clone --depth 1 {PICO_SDK_URL} {sdk_dir}")
-    print("  clone OK(RP2350 标准 board 无需 submodules)")
+    else:
+        parent = os.path.dirname(sdk_dir.rstrip("/"))
+        os.makedirs(parent, exist_ok=True)
+        try:
+            sh(["git", "clone", "--depth", "1", PICO_SDK_URL, sdk_dir])
+        except EnvError:
+            raise EnvError(
+                "clone pico-sdk 失败(网络?)。手动:\n"
+                f"  git clone --depth 1 {PICO_SDK_URL} {sdk_dir}")
+        print("  clone OK")
+    # 本固件开 stdio_usb(host CLI 走 USB CDC),tinyusb 必须在
+    if not os.path.isdir(os.path.join(sdk_dir, "lib", "tinyusb", "src")):
+        try:
+            sh(["git", "-C", sdk_dir, "submodule", "update",
+                "--init", "--depth", "1", "lib/tinyusb"])
+        except EnvError:
+            raise EnvError(
+                "tinyusb submodule 拉取失败(网络?)。手动:\n"
+                f"  git -C {sdk_dir} submodule update --init lib/tinyusb")
+        print("  tinyusb submodule OK")
 
 
 def step_build(board: str, sdk_dir: str, build_dir: str) -> str:
@@ -130,6 +158,8 @@ def step_build(board: str, sdk_dir: str, build_dir: str) -> str:
     pico_board, board_opt = BOARD_OPTS[board]
     if not os.path.isfile(os.path.join(sdk_dir, "pico_sdk_init.cmake")):
         raise EnvError(f"pico-sdk 不在 {sdk_dir} —— 先跑 sdk 步(或设 PICO_SDK_PATH)")
+    if not os.path.isdir(os.path.join(sdk_dir, "lib", "tinyusb", "src")):
+        raise EnvError("tinyusb submodule 未初始化(固件 USB CDC 需要)—— 重跑 sdk 步")
     if not all(have(t) for t in TOOL_PROBES):
         raise EnvError("工具链缺失(cmake/ninja/arm-gcc)—— 先跑 tools 步")
     build_dir = os.path.abspath(os.path.join(REPO_ROOT, build_dir))
@@ -192,14 +222,19 @@ def step_flash_find(build_dir: str) -> str:
 
 def step_hostcli() -> None:
     print("== hostcli: pip 安装 ga100vfi host CLI ==")
-    sh([sys.executable, "-m", "pip", "install", "-e", HOST_DIR], check=False)
+    pip = [sys.executable, "-m", "pip", "install", "-e", HOST_DIR]
+    if sh(pip, check=False).returncode != 0:
+        # Ubuntu 24.04 等 PEP 668 环境:退到用户目录,不动系统包
+        print("  首次安装失败,重试 --user --break-system-packages(PEP 668)")
+        sh(pip + ["--user", "--break-system-packages"], check=False)
+    # cwd 固定到 /:仓库根有个同名 ga100vfi/ 目录,在这里探测会误判为已安装
     probe = subprocess.run([sys.executable, "-c", "import serial, ga100vfi"],
-                           capture_output=True)
+                           capture_output=True, cwd="/")
     if probe.returncode != 0:
         # pico-ga100vfi/host 未进 sys.path 时用 PYTHONPATH 探测(文档要求的方式)
         env = dict(os.environ, PYTHONPATH=HOST_DIR)
         probe2 = subprocess.run([sys.executable, "-c", "import serial, ga100vfi"],
-                                capture_output=True, env=env)
+                                capture_output=True, env=env, cwd="/")
         if probe2.returncode != 0:
             raise EnvError(
                 "host CLI 不可 import。手动:\n"
@@ -231,24 +266,33 @@ def main() -> int:
         prog="ff_env_setup",
         description="CMP 170HX 主机侧环境准备(工具链/pico-sdk/固件/uf2 烧写/host CLI);"
                     "毛刺到烧录用 utils/ff_burn_flow.py。幂等可重跑。")
-    ap.add_argument("--board", choices=list(BOARD_OPTS), default=None,
-                    help="板型,build/flash/all 必填:pico2_w(Pico 2 W/Waveshare Plus-W)"
-                         " 或 pico2(Pico 2)。无默认值,防烧错板")
-    ap.add_argument("--sdk-dir", default=os.path.expanduser("~/pico-sdk"))
-    ap.add_argument("--build-dir", default=os.path.join("pico-ga100vfi", "build"),
-                    help="相对仓库根的构建目录")
-    ap.add_argument("--flash-timeout", type=int, default=120,
-                    help="等 BOOTSEL 挂载的秒数")
-    ap.add_argument("--no-detect", action="store_true",
-                    help="flash 后不提示 detect.uf2")
+    ap.set_defaults(board=None, sdk_dir=os.path.join(real_home(), "pico-sdk"),
+                    build_dir=os.path.join("pico-ga100vfi", "build"),
+                    flash_timeout=120, no_detect=False)
+    # 选项同时挂到每个子命令上,这样 README 里的
+    # `ff_env_setup.py all --board pico2` 写法可用;SUPPRESS 让未给出的
+    # 选项不覆盖 set_defaults 的值。
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--board", choices=list(BOARD_OPTS),
+                        default=argparse.SUPPRESS,
+                        help="板型,build/flash/all 必填:pico2_w(Pico 2 W/Waveshare Plus-W)"
+                             " 或 pico2(Pico 2)。无默认值,防烧错板")
+    common.add_argument("--sdk-dir", default=argparse.SUPPRESS)
+    common.add_argument("--build-dir", default=argparse.SUPPRESS,
+                        help="相对仓库根的构建目录")
+    common.add_argument("--flash-timeout", type=int, default=argparse.SUPPRESS,
+                        help="等 BOOTSEL 挂载的秒数")
+    common.add_argument("--no-detect", action="store_true",
+                        default=argparse.SUPPRESS,
+                        help="flash 后不提示 detect.uf2")
     sub = ap.add_subparsers(dest="cmd")
-    sub.add_parser("check", help="只检测不安装(无需 root)")
-    sub.add_parser("tools", help="apt 安装缺失工具链")
-    sub.add_parser("sdk", help="clone pico-sdk(浅克隆)")
-    sub.add_parser("build", help="编译固件(需 --board)")
-    sub.add_parser("flash", help="BOOTSEL 烧写 pwmvid.uf2(需 --board)")
-    sub.add_parser("hostcli", help="pip 安装 host CLI")
-    sub.add_parser("all", help="全流程:tools→sdk→build→flash→hostcli")
+    sub.add_parser("check", parents=[common], help="只检测不安装(无需 root)")
+    sub.add_parser("tools", parents=[common], help="apt 安装缺失工具链")
+    sub.add_parser("sdk", parents=[common], help="clone pico-sdk(浅克隆)")
+    sub.add_parser("build", parents=[common], help="编译固件(需 --board)")
+    sub.add_parser("flash", parents=[common], help="BOOTSEL 烧写 pwmvid.uf2(需 --board)")
+    sub.add_parser("hostcli", parents=[common], help="pip 安装 host CLI")
+    sub.add_parser("all", parents=[common], help="全流程:tools→sdk→build→flash→hostcli")
     args = ap.parse_args()
 
     if args.cmd is None:
