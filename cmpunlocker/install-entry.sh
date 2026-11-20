@@ -1,17 +1,21 @@
 #!/usr/bin/env bash
 # install-entry.sh - 自解压安装包入口(烧完 FF 冷启后一键装到验证)
 #
-# 阶段:检查用户态驱动 → install.sh(含 pcie-gen3.patch 模块)→ 编 cmp-pcie-speed
-#      → 写 cmp-gen3.conf → 逐卡 Gen3 分阶训练 → [可选 --gen4: E1+setpci] → verify + 带宽
+# 阶段:彻底清理旧驱动 → 检查用户态驱动 → install.sh(含 pcie-gen3.patch 模块)
+#      → 编 cmp-pcie-speed → 写 cmp-gen3.conf → 逐卡 Gen3 分阶训练
+#      → Gen4(E1+setpci,默认执行)→ verify + 带宽
+# NVLink 解锁在 FF 层已完成(烧 NVLINK_DISABLE := DEFECTIVE);驱动层无操作,
+#      U11 硬改前仅解锁层生效(README 5.3)。
 #
-# 用法: sudo ./cmp170hx-ff-install.elf [--gen4] [--bdf 0000:xx:00.0] [install.sh 参数...]
+# 用法: sudo ./cmp170hx-ff-install.elf [--bdf 0000:xx:00.0] [install.sh 参数...]
+#       默认全功能(Gen3 训练 + Gen4 retrain 都执行);--no-gen4 只到 Gen3。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 EXPECTED_DRIVER=615.71.09
 GEN3_KEYS="RmForceEnableGen2=1;RMPcieLinkSpeed=0x5;CmpGen3=1"
 
-DO_GEN4=0
+DO_GEN4=1
 BDF_ONLY=""
 PASS_ARGS=()
 prev_bdf=0
@@ -19,7 +23,7 @@ for arg in "$@"; do
     if (( prev_bdf )); then BDF_ONLY="${arg}"; prev_bdf=0; continue; fi
     case "${arg}" in
         --self-test)  SELF_TEST=1 ;;
-        --gen4)       DO_GEN4=1 ;;
+        --no-gen4)    DO_GEN4=0 ;;
         --bdf=*)      BDF_ONLY="${arg#--bdf=}" ;;
         --bdf)        prev_bdf=1 ;;
         *)            PASS_ARGS+=("${arg}") ;;
@@ -52,8 +56,66 @@ fi
 
 [[ "${EUID}" -eq 0 ]] || { err "需要 root"; exit 1; }
 
+# ------------------------------------------------------ 阶段 0 彻底清理旧驱动
+echo "== [0/7] 彻底清理既有 nvidia 驱动(内核模块/服务/黑名单 nouveau)=="
+purge_info() { printf '  [ .. ] %s\n' "$*"; }
+
+purge_info "停用 nvidia 相关服务"
+for svc in nvidia-persistenced nvidia-fabricmanager nvidia-suspend \
+           nvidia-resume nvidia-hibernate nvidia-powerd docker libvirt-bin; do
+    systemctl disable --now "${svc}" 2>/dev/null || true
+done
+
+purge_info "卸载内存中的 nvidia 内核模块(依赖序)"
+for i in 1 2 3; do
+    if lsmod | grep -q '^nvidia'; then
+        modprobe -r nvidia_drm nvidia_uvm nvidia_modeset nvidia 2>/dev/null || true
+        sleep 1
+    fi
+done
+if lsmod | grep -q '^nvidia'; then
+    err "nvidia 模块仍在内存(有进程占用)。lsof /dev/nvidia* 查占用后重跑;"
+    err "仍不行则物理断电冷启再跑本包。"
+    exit 1
+fi
+
+purge_info "移除 DKMS nvidia 模块(全部版本)"
+if command -v dkms &>/dev/null; then
+    for m in $(dkms status 2>/dev/null | awk -F'[,:/]' '{print $1}' | sort -u); do
+        [[ "${m}" == nvidia* ]] && dkms remove "${m}/all" --all 2>/dev/null || true
+    done
+fi
+depmod -a 2>/dev/null || true
+
+purge_info "卸载 .run 安装的旧内核模块(如有)"
+if command -v nvidia-uninstall &>/dev/null; then
+    nvidia-uninstall -s 2>/dev/null || true
+fi
+
+purge_info "删除旧 cmpunlocker 模块目录(将被本包重建)"
+rm -rf "/lib/modules/$(uname -r)/updates/cmpunlocker" 2>/dev/null || true
+
+purge_info "清理 cmpunlocker/gen2/gen3 旧配置(防旧键覆盖)"
+rm -f /etc/modprobe.d/cmp-pcie-gen2.conf /etc/modprobe.d/cmp-gen3.conf \
+      /etc/modprobe.d/cmpretrain.conf 2>/dev/null || true
+systemctl disable --now gen2.service cmpretrain.service cmp-gen2-retrain.service 2>/dev/null || true
+rm -f /etc/systemd/system/gen2.service /etc/systemd/system/cmpretrain.service \
+      /etc/systemd/system/cmp-gen2-retrain.service 2>/dev/null || true
+systemctl daemon-reload 2>/dev/null || true
+
+purge_info "确保 nouveau 黑名单(与 nvidia-open 并存要求)"
+mkdir -p /etc/modprobe.d
+if ! grep -rq '^blacklist nouveau' /etc/modprobe.d/ 2>/dev/null; then
+    printf 'blacklist nouveau\noptions nouveau modeset=0\n' > /etc/modprobe.d/aa-blacklist-nouveau.conf
+    initramfs_cmd=""
+    command -v update-initramfs &>/dev/null && initramfs_cmd="update-initramfs -u"
+    command -v dracut &>/dev/null && initramfs_cmd="dracut --force"
+    [[ -n "${initramfs_cmd}" ]] && ${initramfs_cmd} 2>/dev/null || true
+fi
+printf '  [ OK ] 旧驱动清理完成\n'
+
 # ------------------------------------------------------------ 阶段 1 用户态驱动
-echo "== [1/6] 检查 nvidia-open 用户态(${EXPECTED_DRIVER})=="
+echo "== [1/7] 检查 nvidia-open 用户态(${EXPECTED_DRIVER})=="
 RUNNING_DRIVER="$(modinfo -F version nvidia 2>/dev/null || true)"
 if [[ -z "${RUNNING_DRIVER}" ]]; then
     RUNNING_DRIVER="$(ls -d /lib/firmware/nvidia/*/ 2>/dev/null | sed 's|.*/nvidia/||;s|/||' | sort -rV | head -1 || true)"
@@ -68,13 +130,13 @@ fi
 ok "nvidia-open ${EXPECTED_DRIVER} 用户态在位"
 
 # -------------------------------------------------- 阶段 2 install.sh(含 gen3 补丁)
-echo "== [2/6] 编译安装解锁模块(离线源码缓存,含 pcie-gen3.patch;禁 Gen2 服务)=="
+echo "== [2/7] 编译安装解锁模块(离线源码缓存,含 pcie-gen3.patch;禁 Gen2 服务)=="
 CMPUNLOCKER_DRIVER_VERSION="${EXPECTED_DRIVER}" \
     bash "${SCRIPT_DIR}/install.sh" --no-gen2-service "${PASS_ARGS[@]}"
 ok "模块安装完成"
 
 # ------------------------------------------------------- 阶段 3 编 cmp-pcie-speed
-echo "== [3/6] 编译 cmp-pcie-speed(RM 分阶训练工具)=="
+echo "== [3/7] 编译 cmp-pcie-speed(RM 分阶训练工具)=="
 SRC_TREE="${SCRIPT_DIR}/driver/.build/open-gpu-kernel-modules-${EXPECTED_DRIVER}"
 [[ -d "${SRC_TREE}" ]] || { err "源码树 ${SRC_TREE} 不存在(构建后应保留)"; exit 1; }
 cc -std=gnu11 -O2 -I"${SRC_TREE}/src/common/sdk/nvidia/inc" \
@@ -83,7 +145,7 @@ chmod 755 /usr/local/sbin/cmp-pcie-speed
 ok "/usr/local/sbin/cmp-pcie-speed 就位"
 
 # ------------------------------------------------------------- 阶段 4 Gen3 持久化
-echo "== [4/6] 写 /etc/modprobe.d/cmp-gen3.conf(CmpGen3=1)=="
+echo "== [4/7] 写 /etc/modprobe.d/cmp-gen3.conf(CmpGen3=1)=="
 EXISTING_RD="$(modprobe -c 2>/dev/null | sed -n 's/^options nvidia .*NVreg_RegistryDwords="\([^"]*\)".*/\1/p' | head -1)"
 if [[ -z "${EXISTING_RD}" ]]; then
     MERGED_RD="${GEN3_KEYS}"
@@ -100,7 +162,7 @@ ok "cmp-gen3.conf 写入(RmForceEnableGen2=1;RMPcieLinkSpeed=0x5;CmpGen3=1)"
 [[ -n "${EXISTING_RD}" ]] && info "已合并既有 NVreg_RegistryDwords;请确认无其他 conf 覆盖"
 
 # ------------------------------------------------------------- 阶段 5 Gen3 训练
-echo "== [5/6] 逐卡 Gen3 分阶训练(幂等;已是 Gen3 则跳过)=="
+echo "== [5/7] 逐卡 Gen3 分阶训练(幂等;已是 Gen3 则跳过)=="
 mapfile -t BDFS < <(lspci -D 2>/dev/null | awk '/10de:20c2|10de:2082/ {print $1}')
 if [[ -n "${BDF_ONLY}" ]]; then BDFS=("${BDF_ONLY}"); fi
 (( ${#BDFS[@]} > 0 )) || { err "未发现 CMP 170HX(10de:20c2/2082);用 --bdf= 指定"; exit 1; }
@@ -116,7 +178,7 @@ done
 
 # ------------------------------------------------------------------ 阶段 6a Gen4
 if (( DO_GEN4 == 1 )); then
-    echo "== [6/6*] Gen4(易失;每次冷启后需重做)=="
+    echo "== [6/7] Gen4(易失;每次冷启后需重做)=="
     cat <<'WARN'
   ┌─────────────────────────────────────────────────────────────────────┐
   │ ⛔ Gen4 风险须知                                                     │
@@ -147,7 +209,7 @@ WARN
 fi
 
 # ------------------------------------------------------------------ 阶段 6b 验证
-echo "== [6/6] 验收:verify.sh + 每卡链路状态与带宽 =="
+echo "== [7/7] 验收:verify.sh + 每卡链路状态与带宽 =="
 VERIFY_SH="${SCRIPT_DIR}/verify.sh"
 VOUT="$(bash "${VERIFY_SH}" 2>&1 || true)"
 echo "${VOUT}"
