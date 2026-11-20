@@ -69,6 +69,14 @@ for name in "${PATCH_ORDER[@]}"; do
 done
 PATCH_HASH="$(cat "${PATCH_FILES[@]}" | sha256sum | cut -d' ' -f1)"
 
+# Normalize patch line endings to LF. A CRLF patch adds CRLF lines to the LF
+# source tarball, which then breaks context matching for later LF patches.
+# Stripping CR keeps every patch and the source LF.
+for p in "${PATCH_FILES[@]}"; do
+    sed -i 's/\r$//' "$p"
+done
+PATCH_HASH="$(cat "${PATCH_FILES[@]}" | sha256sum | cut -d' ' -f1)"
+
 PROFILE="${CMPUNLOCKER_CARD_PROFILE:-8gb}"
 case "${PROFILE}" in
     8GB) PROFILE="8gb" ;;
@@ -134,7 +142,7 @@ if (
     and "SEC2_POSTBL_TIMING_CMP_170HX_10GB_PCI_DEVICE_ID" in text
     and "0x02779000U" in text
     and "0x02669000U" in text
-    and "0x0000001000000000ULL" in text
+    and ("0x0000001000000000ULL" in text or "0x0000001400000000ULL" in text)
     and "0x0000000A00000000ULL" in text
 ):
     print(f"runtime device-id geometry (profile metadata={label})")

@@ -39,7 +39,7 @@ the kernel command line so the IOMMU runs in passthrough mode. This takes effect
 on the next reboot.
 
 Without --profile, each unlockable GPU is classified by PCI device ID:
-  10de:20c2 → 8gb / 64GB unlock
+  10de:20c2 → 8gb / 80GB unlock (FF-burned card, 20 active FBPAs)
   10de:2082 → 10gb / 40GB unlock
 
 Multi-GPU and mixed 8GB+10GB systems are supported in one install.
@@ -151,13 +151,13 @@ fi
 
 case "${CARD_PROFILE}" in
     8gb)
-        info "Unlock geometry: 64GB per card (CFG1=0x02779000 LMR=0x0000020B)"
+        info "Unlock geometry: 80GB per card (CFG1=0x02779000 LMR=0x0000028B)"
         ;;
     10gb)
         info "Unlock geometry: 40GB per card (CFG1=0x02669000 LMR=0x0000028A)"
         ;;
     mixed)
-        info "Unlock geometry: 64GB for 20c2 / 40GB for 2082"
+        info "Unlock geometry: 80GB for 20c2 / 40GB for 2082"
         ;;
     *)
         die "Internal error: bad profile ${CARD_PROFILE}"

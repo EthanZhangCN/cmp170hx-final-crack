@@ -66,7 +66,7 @@ diff -Naur a/src/nvidia/src/kernel/gpu/gsp/kernel_gsp.c b/src/nvidia/src/kernel/
  
      {
          // If the new FB layout requires a scrubber ucode to scrub additional space, prepare it now
-@@ -4821,6 +4857,143 @@
+@@ -4821,6 +4857,173 @@
      // Setup arguments for bootstrapping GSP
      NV_CHECK_OK_OR_RETURN(LEVEL_ERROR, kgspPrepareForBootstrap_HAL(pGpu, pKernelGsp, KGSP_BOOT_MODE_NORMAL));
  
@@ -142,11 +142,41 @@ diff -Naur a/src/nvidia/src/kernel/gpu/gsp/kernel_gsp.c b/src/nvidia/src/kernel/
 +            NvU32 devId = pGpu->idInfo.PCIDeviceID >> 16;
 +            NvU32 cfg1Value;
 +            NvU32 lmrValue;
++            NvU32 fbpBefore;
++            NvU32 ctrlFbpaBefore;
++            NvU32 ctrlFbpBefore;
 +
 +            if (devId == SEC2_POSTBL_TIMING_CMP_170HX_8GB_PCI_DEVICE_ID)
 +            {
 +                cfg1Value = 0x02779000U;
-+                lmrValue  = 0x0000020BU;
++                lmrValue  = 0x0000028BU;
++
++                /* W1: OPT_FBP_DISABLE shadow write, behind opened OPT_PLM */
++                fbpBefore = GPU_REG_RD32(pGpu, 0x00820364U);
++                GPU_REG_WR32(pGpu, 0x00820364U, 0x00000840U);
++                NV_PRINTF(LEVEL_ERROR,
++                          "SEC2_DEBUG: W1 FBP_DISABLE 0x%08x -> 0x%08x "
++                          "FBPA=0x%08x FBIO=0x%08x ROP_L2=0x%08x "
++                          "DEF_FBPA=0x%08x NUM_ACTIVE=0x%x\n",
++                          fbpBefore, GPU_REG_RD32(pGpu, 0x00820364U),
++                          GPU_REG_RD32(pGpu, 0x00820368U),
++                          GPU_REG_RD32(pGpu, 0x0082036CU),
++                          GPU_REG_RD32(pGpu, 0x008202C4U),
++                          GPU_REG_RD32(pGpu, 0x008205D0U),
++                          GPU_REG_RD32(pGpu, 0x009a0164U));
++
++                /* W1b: CTRL plane live-override test (SW-override fuse reads set) */
++                ctrlFbpaBefore = GPU_REG_RD32(pGpu, 0x00820818U);
++                ctrlFbpBefore  = GPU_REG_RD32(pGpu, 0x00820938U);
++                GPU_REG_WR32(pGpu, 0x00820818U, 0x00000C0CU);
++                GPU_REG_WR32(pGpu, 0x00820938U, 0x00000012U);
++                NV_PRINTF(LEVEL_ERROR,
++                          "SEC2_DEBUG: W1b CTRL_FBPA 0x%08x -> 0x%08x CTRL_FBP 0x%08x -> 0x%08x "
++                          "NUM_ACTIVE=0x%x EN_MASK=0x%08x\n",
++                          ctrlFbpaBefore, GPU_REG_RD32(pGpu, 0x00820818U),
++                          ctrlFbpBefore, GPU_REG_RD32(pGpu, 0x00820938U),
++                          GPU_REG_RD32(pGpu, 0x009a0164U),
++                          GPU_REG_RD32(pGpu, 0x009a0148U));
 +            }
 +            else
 +            {
@@ -447,7 +477,7 @@ diff -Naur a/src/nvidia/src/kernel/gpu/gsp/kernel_gsp.c b/src/nvidia/src/kernel/
 +            NV2080_CTRL_CMD_FB_GET_FB_REGION_INFO_PARAMS *pFbRegionInfoParams =
 +                &pGSCI->fbRegionInfoParams;
 +            NvU64 targetFbBytes = (devId == SEC2_POSTBL_TIMING_CMP_170HX_8GB_PCI_DEVICE_ID)
-+                                    ? 0x0000001000000000ULL
++                                    ? 0x0000001400000000ULL
 +                                    : 0x0000000A00000000ULL;
 +            NvU32 numRegions = pFbRegionInfoParams->numFBRegions;
 +

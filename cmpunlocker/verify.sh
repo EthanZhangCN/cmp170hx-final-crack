@@ -14,10 +14,10 @@ is_unlocked_memory() {
     [[ "${mem_mib}" =~ ^[0-9]+$ ]] || return 1
     case "${profile}" in
         8gb)
-            (( mem_mib >= 60000 )) && return 0
+            (( mem_mib >= 75000 )) && return 0
             ;;
         10gb)
-            (( mem_mib >= 35000 && mem_mib < 60000 )) && return 0
+            (( mem_mib >= 35000 && mem_mib < 75000 )) && return 0
             ;;
     esac
     return 1

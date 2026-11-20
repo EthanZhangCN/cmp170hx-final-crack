@@ -7,11 +7,11 @@ gpu:
 profiles:
   "8gb":
     stock_mib: 8192
-    unlocked_mib: 65536
+    unlocked_mib: 81920
     cfg1: "0x02779000"
-    lmr: "0x0000020B"
-    fb_bytes: "0x0000001000000000"
-    label: "64GB"
+    lmr: "0x0000028B"
+    fb_bytes: "0x0000001400000000"
+    label: "80GB"
     geometry_rewrite: true
   "10gb":
     stock_mib: 10240
@@ -23,10 +23,10 @@ profiles:
     geometry_rewrite: true
   "mixed":
     stock_mib: 8192
-    unlocked_mib: 65536
+    unlocked_mib: 81920
     cfg1: "0x02779000"
-    lmr: "0x0000020B"
-    fb_bytes: "0x0000001000000000"
+    lmr: "0x0000028B"
+    fb_bytes: "0x0000001400000000"
     label: "mixed"
     geometry_rewrite: false
 

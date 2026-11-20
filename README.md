@@ -20,7 +20,7 @@
 | `ga100vfi/` ⊂ | 寄存器地图 + gpu0-capture |
 | `cmp170hx-ffcalc/` ⊂ | 逐卡 FF 计算(交叉验证用) |
 | `cmp-170hx-rir-burn-util/` ⊂ | CMD_WRITE 写机制参考 |
-| `cmpunlocker/` | 80GB 显存几何 + PCIe 补丁(须配 nvidia-open 615.71.09) |
+| `cmpunlocker/` | 80GB 显存几何(烧后 20 活 FBPA 组:LMR 0x28B/fb 0x1400000000)+ PCIe 补丁(须配 nvidia-open 615.71.09) |
 | `CMPGlitch/` | 完整记录快照:Gen4 跑通方案 + 备份/回滚工具链(驱动 610.43.03) |
 
 > ⊂ = git submodule(见 `.gitmodules`),克隆后 `git submodule update --init` 拉取;日常更新用 `git submodule update --remote`。
@@ -493,6 +493,7 @@ wc -c /sys/bus/pci/devices/<bdf>/resource1   # 期望 ~137438953472(128 GiB)
 | Gen4 训不上 | RM SET_PCIE_SPEED 被固件拒 | 用 setpci 硬件 retrain,别走 RM |
 | 烧写路由错/卡 die | DEBUGCTRL.RWL=1 | 主阵列烧写保持 RWL=0 |
 | 显示 80GiB 一碰就崩 | 只改 FBP 没改 FBPA/FBIO,或 L2 幻觉 | 全量 fill/verify 实测 |
+| 烧后卡只解到 64GB | 驱动树误用未烧卡的 64GB 几何(LMR 0x20B/fb 0x1000000000) | 烧后必须用 80GB 组:LMR 0x28B/fb 0x1400000000+W1/W1b 影子写(本仓库 cmpunlocker 已内置;verify 阈值 ≥75000 防蒙混) |
 | 计划从行 222 起排 | ffcalc ff_rows 空(issue#1) | 用 utils/ga100_ff.py(已防呆),确认 ff_rows 非空 |
 
 ## 附录 C · 权威来源

@@ -70,7 +70,7 @@ sudo ./install.sh
 To force a certain memory profile, use the `--profile` option:
 
 ```bash
-sudo ./install.sh --profile=8gb    # 8GB card → 64GB unlock
+sudo ./install.sh --profile=8gb    # 8GB card → 80GB unlock (FF-burned, 20 active FBPAs)
 sudo ./install.sh --profile=10gb   # 10GB card → 40GB unlock
 ```
 
@@ -88,7 +88,7 @@ Then perform a reboot.
     <td>Working ✓</td>
   </tr>
   <tr>
-    <td>Memory geometry (64GB on 8GB cards, 40GB on 10GB cards)</td>
+    <td>Memory geometry (80GB on FF-burned 8GB cards, 40GB on 10GB cards)</td>
     <td>Working ✓</td>
   </tr>
   <tr>
@@ -100,7 +100,7 @@ Then perform a reboot.
     <td>Working ✓</td>
   </tr>
   <tr>
-    <td>Full BAR1 Size (64GB)</td>
+    <td>Full BAR1 Size (80GB)</td>
     <td>Working ✓</td>
   </tr>
   <tr>
