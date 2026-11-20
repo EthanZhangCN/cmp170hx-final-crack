@@ -491,11 +491,11 @@ FIXTURE_PLAN = {
     "ff_rows": {"222": "0x00000001"},
     "records": [  # 真实 plan 形态:无 fields 键;温和块仅 chain1 blk5(fbio 独占)
         {"row": 223, "chain": 1, "block": 5, "old": "0x0852", "new": "0x0840",
-         "record": "0x08401541"},
+         "record": "0x08400141"},
         {"row": 224, "chain": 1, "block": 20, "old": "0x0013", "new": "0x0000",
-         "record": "0x00005081"},
+         "record": "0x00000501"},
         {"row": 225, "chain": 2, "block": 39, "old": "0x0021", "new": "0x0000",
-         "record": "0x00009E42"},
+         "record": "0x000009C2"},
     ],
 }
 

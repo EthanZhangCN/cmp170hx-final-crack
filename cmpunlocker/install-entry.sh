@@ -99,9 +99,19 @@ purge_info "清理 cmpunlocker/gen2/gen3 旧配置(防旧键覆盖)"
 rm -f /etc/modprobe.d/cmp-pcie-gen2.conf /etc/modprobe.d/cmp-gen3.conf \
       /etc/modprobe.d/cmpretrain.conf 2>/dev/null || true
 # 烧 FF 期间 campaign 写的 nvidia 黑名单(install nvidia /bin/false 会挡死
-# 驱动加载)——装机的本意就是加载驱动,必须删。
-rm -f /etc/modprobe.d/aa-blacklist-nvidia-campaign.conf \
-      /etc/modprobe.d/cmp-preflight.conf.disabled 2>/dev/null || true
+# 驱动加载)——装机的本意就是加载驱动,必须删;且发行版装过 nvidia 驱动时
+# 黑名单会随驱动打包进 initramfs,删除后必须重建,否则早期加载仍被旧副本挡住。
+nvidia_bl_removed=0
+for bl in /etc/modprobe.d/aa-blacklist-nvidia-campaign.conf \
+          /etc/modprobe.d/cmp-preflight.conf.disabled; do
+    if [[ -f "${bl}" ]]; then rm -f "${bl}"; nvidia_bl_removed=1; fi
+done
+if (( nvidia_bl_removed )); then
+    initramfs_cmd=""
+    command -v update-initramfs &>/dev/null && initramfs_cmd="update-initramfs -u"
+    command -v dracut &>/dev/null && initramfs_cmd="dracut --force"
+    [[ -n "${initramfs_cmd}" ]] && ${initramfs_cmd} 2>/dev/null || true
+fi
 systemctl disable --now gen2.service cmpretrain.service cmp-gen2-retrain.service 2>/dev/null || true
 rm -f /etc/systemd/system/gen2.service /etc/systemd/system/cmpretrain.service \
       /etc/systemd/system/cmp-gen2-retrain.service 2>/dev/null || true
@@ -170,7 +180,6 @@ else
     MERGED_RD="${FILTERED_RD:+${FILTERED_RD};}${GEN3_KEYS}"
 fi
 printf 'options nvidia NVreg_RegistryDwords="%s"\n' "${MERGED_RD}" > /etc/modprobe.d/cmp-gen3.conf
-rm -f /etc/modprobe.d/cmp-pcie-gen2.conf   # 防 RMPcieLinkSpeed=0x1 字典序覆盖 0x5
 ok "cmp-gen3.conf 写入(RmForceEnableGen2=1;RMPcieLinkSpeed=0x5;CmpGen3=1)"
 [[ -n "${EXISTING_RD}" ]] && info "已合并既有 NVreg_RegistryDwords;请确认无其他 conf 覆盖"
 
