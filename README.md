@@ -267,7 +267,9 @@ sudo python3 utils/ff_burn_flow.py reset                              # 换卡/�
 - 子命令:`run`(自动续跑)/ `prep` / `glitch` / `plan` / `precheck` / `single-burn` / `burn-all` / `status` / `reset`;状态存 `campaign_state/`
 - 单行试烧默认关闭(省一轮冷启);`--single` 开启后:试烧 → ⛔ 物理冷启 → 重跑 `run`(自动重打金窗、只烧剩余行)
 - 护栏:真烧两段确认(`Y` → 字面量 `BURN`,非交互需 `--yes`);金窗探针不在线即停;plan sha256 + bdf 防串卡;烧失败置 `aborted` 绝不自动重试
-- 自检:`python3 utils/ff_burn_flow.py --self-test`;冷启后验收(阶段 4)仍用 `verify` / `final_check.py`
+- 自检:`python3 utils/ff_burn_flow.py --self-test`;冷启后验收(阶段 4)以 `ga100_ff.py verify` 对照 plan.json 的 defective 基线为准
+  ⚠ `CMPGlitch/tools/final_check.py` 的 FUSE_CHECKS **硬编码了 CMPGlitch 那张卡的缺陷期望值**(FBP=0x840/FBPA=0xC03000)——缺陷不同的卡烧得再对也会 FAIL,只看它的 runtime/Xid 段
+  ⚠ 回滚:`CMPGlitch/tools/ff_restore.py` 期望 CMPGlitch 原生 plan 键(`old_data/new_data`,ga100_ff 出的是 `old/new`),且用**烧前** ff.json 的 blank_rows 排行——恢复前需手动转换键名并**重新 dump** 取当前空行
 
 ---
 

@@ -403,7 +403,9 @@ def phase_burn_all(args, st: dict) -> bool:
     print(f"\n✅ FF 烧写完成:{len(st['burned_rows'])} 条记录全部写入并回读一致。")
     print("现在物理断电冷启(不是 reboot!),然后手动验收:")
     print(f"  sudo python3 utils/ga100_ff.py verify --bdf {args.bdf}")
-    print(f"  sudo python3 CMPGlitch/tools/final_check.py   # 期望 failed==0")
+    print("  对照:烧后 _DISABLE 应等于 plan.json 里 defective 的本卡基线")
+    print("  (final_check.py 的 FUSE_CHECKS 硬编码了 CMPGlitch 卡的缺陷期望值,")
+    print("   如 FBP=0x840/FBPA=0xC03000——缺陷不同的卡会误报 FAIL,只参考 runtime/Xid 段)")
     print("⚠ 若 GSP 启动失败 0x55 → 漏烧 PES/ROP_L2,见 README 阶段 4 红线。")
     return True
 
