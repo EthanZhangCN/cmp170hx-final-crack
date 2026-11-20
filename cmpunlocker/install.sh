@@ -246,11 +246,10 @@ else
     warn "--no-passthrough given; cards are not prepared for VM passthrough"
 fi
 
-info "Configuring PCIe Gen2"
-cat > /etc/modprobe.d/cmp-pcie-gen2.conf <<'EOF'
-options nvidia NVreg_RegistryDwords="RmForceEnableGen2=1;RMPcieLinkSpeed=0x1"
-EOF
-ok "Wrote /etc/modprobe.d/cmp-pcie-gen2.conf"
+info "Configuring PCIe: remove legacy Gen2 forcing, then write Gen3 keys"
+# Gen2 强制 conf(RMPcieLinkSpeed=0x1)会压住 Gen3 的 0x5(字典序在前即胜出),
+# 且残留的 0x1 会被任何后续 NVreg_RegistryDwords 合并逻辑保留——直接删。
+rm -f /etc/modprobe.d/cmp-pcie-gen2.conf
 
 for legacy_unit in cmpretrain.service cmp-gen2-retrain.service; do
     systemctl disable --now "${legacy_unit}" 2>/dev/null || true

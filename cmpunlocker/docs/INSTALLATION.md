@@ -26,7 +26,7 @@ sudo ./install.sh
 To force a certain memory profile, use the `--profile` option:
 
 ```bash
-sudo ./install.sh --profile=8gb    # 8GB card → 64GB unlock
+sudo ./install.sh --profile=8gb    # 8GB card → 80GB unlock (FF-burned)
 sudo ./install.sh --profile=10gb   # 10GB card → 40GB unlock
 ```
 

@@ -146,15 +146,24 @@ ok "/usr/local/sbin/cmp-pcie-speed 就位"
 
 # ------------------------------------------------------------- 阶段 4 Gen3 持久化
 echo "== [4/7] 写 /etc/modprobe.d/cmp-gen3.conf(CmpGen3=1)=="
+# 先删 install.sh 刚写的 gen2 conf(其 RMPcieLinkSpeed=0x1 会被下方合并逻辑保留并废掉 Gen3),
+# 再从残余配置合并;GEN3_KEYS 键强制覆盖(旧值不保留)。
+rm -f /etc/modprobe.d/cmp-pcie-gen2.conf   # 防 0x1 字典序覆盖 0x5;且防合并逻辑吃进 0x1
 EXISTING_RD="$(modprobe -c 2>/dev/null | sed -n 's/^options nvidia .*NVreg_RegistryDwords="\([^"]*\)".*/\1/p' | head -1)"
 if [[ -z "${EXISTING_RD}" ]]; then
     MERGED_RD="${GEN3_KEYS}"
 else
-    MERGED_RD="${EXISTING_RD}"
-    for kv in ${GEN3_KEYS//;/ }; do
-        key="${kv%%=*}"
-        [[ "${MERGED_RD}" != *"${key}="* ]] && MERGED_RD="${MERGED_RD};${kv}"
+    # 剔除与 GEN3_KEYS 冲突的旧键,再追加 GEN3_KEYS(强制覆盖语义)
+    FILTERED_RD=""
+    for oldkv in ${EXISTING_RD//;/ }; do
+        okey="${oldkv%%=*}"
+        skip=0
+        for kv in ${GEN3_KEYS//;/ }; do
+            [[ "${okey}" == "${kv%%=*}" ]] && skip=1 && break
+        done
+        (( skip )) || FILTERED_RD="${FILTERED_RD:+${FILTERED_RD};}${oldkv}"
     done
+    MERGED_RD="${FILTERED_RD:+${FILTERED_RD};}${GEN3_KEYS}"
 fi
 printf 'options nvidia NVreg_RegistryDwords="%s"\n' "${MERGED_RD}" > /etc/modprobe.d/cmp-gen3.conf
 rm -f /etc/modprobe.d/cmp-pcie-gen2.conf   # 防 RMPcieLinkSpeed=0x1 字典序覆盖 0x5

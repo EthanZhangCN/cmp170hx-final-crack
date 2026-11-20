@@ -53,7 +53,7 @@ profile_from_devid() {
 
 expected_mib_for_profile() {
     case "$1" in
-        8gb) echo "65536" ;;
+        8gb) echo "81920" ;;
         10gb) echo "40960" ;;
         *) echo "" ;;
     esac
