@@ -364,8 +364,8 @@ def cmd_verify(args, Bar0, restore):
 def main():
     Bar0, restore = _import_bar0()
     ap = argparse.ArgumentParser(prog="ga100_ff",
-                                 description="GA100 FF 解锁一体工具(只读 plan / 烧写 burn / 验证 verify)")
-    ap.add_argument("--bdf", default=None, help="卡的 PCI 地址,如 0000:2f:00.0")
+                                 description="GA100 FF 解锁一体工具(只读 plan / 烧写 burn / 验证 verify)\n"
+                                             "--bdf 是子命令选项:ga100_ff.py plan --bdf <bdf>")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     p = sub.add_parser("plan", help="只读采集 + 按本卡缺陷生成烧写计划")
@@ -373,7 +373,8 @@ def main():
     p.add_argument("-o", "--out", required=True)
 
     b = sub.add_parser("burn", help="烧写(默认 dry-run;--commit 真烧)")
-    b.add_argument("--bdf", default=None)
+    b.add_argument("--bdf", default=None,
+                   help="缺省用 plan 内记录的 bdf;显式传值即以本卡为准")
     b.add_argument("--plan", required=True)
     b.add_argument("--commit", action="store_true")
 

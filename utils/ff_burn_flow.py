@@ -45,8 +45,10 @@ BLACKLIST_BODY = (
 )
 
 # ga100_ff.py FIELDS 的 block 反查:优先挑 chain1 非关键记录做试烧。
-# fbp(FBP_DISABLE, chain1 blk35 附近)是最温和的候选;绝不选 chain2(PCIe)。
-SAFE_TEST_FIELD_BLOCKS = {"fbp", "fbpa", "fbio"}
+# 温和字段(ga100_ff FIELDS 全名);绝不选 chain2(PCIe)。
+# 注意 fbpa_disable 跨 blk6/7/8 且与 fbio 共享 blk6 → 整块独占的只有
+# fbp_disable(blk19 与 rop_l2 共享!)…… 实际纯独占的只有 fbio(blk5)。
+SAFE_TEST_FIELD_BLOCKS = {"fbp_disable", "fbio_disable"}
 FF_FIRST_ROW = 222  # FF 区首行(probe 假记录指向已用行,绝不指向空行)
 
 
@@ -264,13 +266,39 @@ def phase_precheck(args, st: dict) -> bool:
 
 
 def pick_test_row(plan: dict) -> int:
-    """默认试烧行:chain1 且字段温和(fbp/fbpa/fbio);绝不 chain2。"""
+    """默认试烧行:chain1 且字段温和(仅 fbp/fbio 独占 block);绝不 chain2。
+
+    ga100_ff 的 records 只带 chain/block,不带字段名;用其 FIELDS 反查
+    (chain,block)→字段。只有整块都属于温和字段才算(fbpa 跨 6/7/8 且与
+    fbio 共享 blk6,rop_l2 与 fbp 共享 blk19,blk23 混 nvlink+sys_pipe
+    ——一律不算温和)。
+    """
+    block_fields: dict[tuple, set] = {}
+    try:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "ga100_ff", os.path.join(REPO_ROOT, "utils", "ga100_ff.py"))
+        gff = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(gff)
+        src_fields = {**gff.FIELDS, **gff.TPC_FIELDS}
+    except Exception as e:  # 反查失败 → 退化为"任一 chain1",安全性不变
+        print(f"  ⚠ FIELDS 反查失败({e}),温和行识别退化为任一 chain1")
+        src_fields = {}
+    for fname, (chain, bit, width, _dk) in src_fields.items():
+        for i in range(width):
+            block_fields.setdefault((chain, (bit + i) // 16), set()).add(fname)
+
+    def mild(rec) -> bool:
+        blocks = [(int(rec["chain"]), int(rec["block"]))]
+        if not blocks[0] in block_fields:
+            return False
+        return block_fields[blocks[0]] <= SAFE_TEST_FIELD_BLOCKS
+
     chain2_rows = {int(r["row"]) for r in plan["records"] if int(r["chain"]) == 2}
     for rec in plan["records"]:
-        if int(rec["chain"]) != 2 and int(rec["row"]) not in chain2_rows:
-            fields = rec.get("fields") or [rec.get("block")]
-            if any(str(f) in SAFE_TEST_FIELD_BLOCKS for f in fields):
-                return int(rec["row"])
+        if int(rec["chain"]) != 2 and int(rec["row"]) not in chain2_rows \
+                and src_fields and mild(rec):
+            return int(rec["row"])
     for rec in plan["records"]:
         if int(rec["chain"]) == 1:
             return int(rec["row"])
@@ -317,7 +345,11 @@ def do_commit_burn(args, st: dict, sliced: dict, purpose: str) -> list:
     if code != 0 or sorted(burned) != sorted(expected):
         st["phase"] = "aborted"
         st["aborted_reason"] = f"{purpose} 烧写不完整"
-        done = sorted(set(burned) | set(st.get("burned_rows", [])))
+        # 立即落盘:main() 的 except 分支会重新 load_state(读磁盘),内存里
+        # 本次更新会丢——部分成功时已烧行必须先写进 state,人工处置才有据可依
+        st["burned_rows"] = sorted(set(st.get("burned_rows", [])) | set(burned))
+        save_state(args, st)
+        done = st["burned_rows"]
         remain = sorted(set(st.get("plan_records_rows", expected)) - set(done))
         raise FlowError(
             f"烧写失败或不完整(exit={code})。绝不自动重试。\n"
@@ -455,13 +487,13 @@ FIXTURE_PLAN = {
     "expect": {"crc": "0x55", "dsov": "0x0"},
     "used_rows": [222],
     "ff_rows": {"222": "0x00000001"},
-    "records": [
-        {"row": 223, "chain": 1, "block": 35, "old": "0x0852", "new": "0x0840",
-         "record": "0x08408C41", "fields": ["fbp"]},
-        {"row": 224, "chain": 1, "block": 19, "old": "0x0013", "new": "0x0000",
-         "record": "0x00004C81", "fields": ["gpc"]},
+    "records": [  # 真实 plan 形态:无 fields 键;温和块仅 chain1 blk5(fbio 独占)
+        {"row": 223, "chain": 1, "block": 5, "old": "0x0852", "new": "0x0840",
+         "record": "0x08401541"},
+        {"row": 224, "chain": 1, "block": 20, "old": "0x0013", "new": "0x0000",
+         "record": "0x00005081"},
         {"row": 225, "chain": 2, "block": 39, "old": "0x0021", "new": "0x0000",
-         "record": "0x00009E42", "fields": ["pcie_gen3"]},
+         "record": "0x00009E42"},
     ],
 }
 
@@ -484,7 +516,7 @@ def self_test() -> int:
     check("slice_plan 裁剪已烧行", [r["row"] for r in s2["records"]] == [224, 225])
 
     # 试烧行选择:chain1 优先 fbp;绝不 chain2
-    check("pick_test_row 选 fbp 行", pick_test_row(FIXTURE_PLAN) == 223)
+    check("pick_test_row 选 fbio 独占块行", pick_test_row(FIXTURE_PLAN) == 223)
     only_chain2 = dict(FIXTURE_PLAN, records=FIXTURE_PLAN["records"][2:])
     try:
         pick_test_row(only_chain2)

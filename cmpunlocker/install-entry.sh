@@ -98,6 +98,10 @@ rm -rf "/lib/modules/$(uname -r)/updates/cmpunlocker" 2>/dev/null || true
 purge_info "清理 cmpunlocker/gen2/gen3 旧配置(防旧键覆盖)"
 rm -f /etc/modprobe.d/cmp-pcie-gen2.conf /etc/modprobe.d/cmp-gen3.conf \
       /etc/modprobe.d/cmpretrain.conf 2>/dev/null || true
+# 烧 FF 期间 campaign 写的 nvidia 黑名单(install nvidia /bin/false 会挡死
+# 驱动加载)——装机的本意就是加载驱动,必须删。
+rm -f /etc/modprobe.d/aa-blacklist-nvidia-campaign.conf \
+      /etc/modprobe.d/cmp-preflight.conf.disabled 2>/dev/null || true
 systemctl disable --now gen2.service cmpretrain.service cmp-gen2-retrain.service 2>/dev/null || true
 rm -f /etc/systemd/system/gen2.service /etc/systemd/system/cmpretrain.service \
       /etc/systemd/system/cmp-gen2-retrain.service 2>/dev/null || true

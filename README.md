@@ -276,6 +276,14 @@ sudo python3 utils/ff_burn_flow.py reset                              # 换卡/�
 > 目的:让 fuse 控制器重放新 FF 链,把解锁体现在派生寄存器和功能上。
 
 **物理断电冷启**(不是 reboot),然后:
+
+> ⚠️ 冷启后装驱动前,先删打毛刺期间写的 nvidia 黑名单(否则 `modprobe nvidia` 被
+> `install nvidia /bin/false` 挡死,驱动永远加载不了):
+> ```bash
+> sudo rm -f /etc/modprobe.d/aa-blacklist-nvidia-campaign.conf
+> ```
+> (5.4 一键安装包阶段 0 已内置此清理;手动装机才需要自己删。)
+
 ```bash
 lspci -vv -s <bdf> | grep -E "LnkCap:|LnkCap2:|LnkSta:"
 nvidia-smi --query-gpu=memory.total,pcie.link.gen.current --format=csv
