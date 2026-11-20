@@ -14,12 +14,14 @@ GEN3_KEYS="RmForceEnableGen2=1;RMPcieLinkSpeed=0x5;CmpGen3=1"
 DO_GEN4=0
 BDF_ONLY=""
 PASS_ARGS=()
+prev_bdf=0
 for arg in "$@"; do
+    if (( prev_bdf )); then BDF_ONLY="${arg}"; prev_bdf=0; continue; fi
     case "${arg}" in
         --self-test)  SELF_TEST=1 ;;
         --gen4)       DO_GEN4=1 ;;
         --bdf=*)      BDF_ONLY="${arg#--bdf=}" ;;
-        --bdf)        : ;;  # value comes as next arg; handled by = form only
+        --bdf)        prev_bdf=1 ;;
         *)            PASS_ARGS+=("${arg}") ;;
     esac
 done
