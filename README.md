@@ -157,6 +157,7 @@ sudo env PYTHONPATH=$PWD/host python3 -m ga100vfi campaign \
   --bdf 0000:2f:00.0 --adaptive --budget 500 --restore-wait 0.4
 # --bdf 换成你的卡地址;--budget 为总发数上限(默认 500,无 0=无限)
 ```
+> ⛔ 网上流传的参数卡若带 `hold=20` **别用**:`hold_ms` 是 **SCL 保持**而非 PERST,>0 会卡死 GPU 启动(几发后卡不枚举/I2C bus low)。campaign 与 `ff_burn_flow.py` 均硬编码 `hold_ms=0`,走本手册命令即安全;勿手动 `attempt` 传 hold(见附录 B)。
 自动闭环:打浅三脉冲 → 判 5 项 → 未中自动调压重打。实测中位 ~5–16 发、几秒即中。
 
 **打毛刺→判定流程**(软件自动闭环,无需示波器):
@@ -472,6 +473,7 @@ wc -c /sys/bus/pci/devices/<bdf>/resource1   # 期望 ~137438953472(128 GiB)
 | RWL latch 不住 | FF 不需要 RWL | 放弃 DEBUGCTRL 路线 |
 | 卸不掉 nvidia | lightdm 抢回 / install 规则强装 | 停服务+禁 conf+逐个卸 |
 | 金窗后 DSOV 又变 1 | PEX_RST/驱动加载 | 卸驱动再打;一窗烧完 |
+| **毛刺几发后卡突然不枚举 / I2C 反复 bus low** | `hold_ms>0`(SCL 保持,非 PERST)会卡死 GPU 启动——上游文档明示 config-id 设好后须为 0 | **保持 `hold_ms=0`**;campaign/`ff_burn_flow.py` 均硬编码 0,勿手动 `attempt` 传 hold;物理断电冷启恢复 |
 | 重启机器不回 | 本机 reboot 病 | 物理断电冷启 |
 | 烧完还 5GT/s | 驱动回锁(post-GSP re-clamp) | Gen3:post-GSP 补丁+分阶训练;Gen4:LTSSM 硬件 retrain |
 | GSP 启动失败 0x55 | 漏烧 PES/ROP_L2 | 与 GPC/TPC 同批烧齐再冷启 |
