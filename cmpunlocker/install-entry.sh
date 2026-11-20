@@ -183,6 +183,19 @@ printf 'options nvidia NVreg_RegistryDwords="%s"\n' "${MERGED_RD}" > /etc/modpro
 ok "cmp-gen3.conf 写入(RmForceEnableGen2=1;RMPcieLinkSpeed=0x5;CmpGen3=1)"
 [[ -n "${EXISTING_RD}" ]] && info "已合并既有 NVreg_RegistryDwords;请确认无其他 conf 覆盖"
 
+# 阶段 5/7 都依赖模块已加载:install.sh 只装不加载;/proc/driver/nvidia
+# (cmp-gen3.sh 取 Device Minor)、nvidia-smi、带宽测试全要它。conf 就位后
+# 立即加载,RegistryDwords 才会带上 Gen3 键。
+if ! lsmod | grep -q '^nvidia '; then
+    info "加载 nvidia 模块(带 cmp-gen3.conf 参数)"
+    if ! modprobe nvidia 2>/dev/null; then
+        sleep 2
+        modprobe nvidia || { err "modprobe nvidia 失败:dmesg | tail 查因;阶段 5/7 将无法执行"; }
+    fi
+    # nvidia_uvm/nvidia_modeset/nvidia_drm 按需跟载(nvidia-smi 只需主模块)
+    sleep 3
+fi
+
 # ------------------------------------------------------------- 阶段 5 Gen3 训练
 echo "== [5/7] 逐卡 Gen3 分阶训练(幂等;已是 Gen3 则跳过)=="
 mapfile -t BDFS < <(lspci -D 2>/dev/null | awk '/10de:20c2|10de:2082/ {print $1}')
