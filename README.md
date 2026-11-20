@@ -25,7 +25,7 @@
 
 > ⊂ = git submodule(见 `.gitmodules`),克隆后 `git submodule update --init` 拉取;日常更新用 `git submodule update --remote`。
 > ffcalc issue#1 防护已入上游,submodule 自带;旧补丁 `utils/ffcalc-fix-issue1.patch` 仅留档。
-> `open-gpu-kernel-modules-615.71.09.tar.gz`(25M)不入库,克隆后手动放回根目录与 `cmpunlocker/driver/.build/`。
+> `open-gpu-kernel-modules-615.71.09.tar.gz`(25M)需另行获取,放到根目录与 `cmpunlocker/driver/.build/`。
 
 ---
 
@@ -59,7 +59,7 @@ sudo python3 utils/ff_burn_flow.py run --bdf 0000:2f:00.0 --single  # ③ 打毛
   - [5.1 满血 80GB 显存](#51-满血-80gb-显存)
   - [5.2 PCIe 实链(Gen3/Gen4)](#52-pcie-实链gen3gen4)
   - [5.3 NVLink](#53-nvlink可选)
-  - [5.4 烧后一键安装包](#54-烧后一键安装包可选cmp170hx-install-pack不入-git)
+  - [5.4 烧后一键安装包](#54-烧后一键安装包可选cmp170hx-install-pack)
 - [阶段 6 · 转 A100 80GB PCIe(可选,高风险)](#阶段-6--转-a100-80gb-pcie可选高风险)
   - [6.0 原理](#60-原理boot-gate-比的是熔丝-devid不是vbios-devid)
   - [6.1 前置条件](#61-前置条件缺一不可)
@@ -264,7 +264,7 @@ python3 utils/ff_burn_flow.py status                                  # 随时�
 sudo python3 utils/ff_burn_flow.py reset                              # 换卡/重来前清状态
 ```
 
-- 子命令:`run`(自动续跑)/ `prep` / `glitch` / `plan` / `precheck` / `single-burn` / `burn-all` / `status` / `reset`;状态存 `campaign_state/`(已 gitignore)
+- 子命令:`run`(自动续跑)/ `prep` / `glitch` / `plan` / `precheck` / `single-burn` / `burn-all` / `status` / `reset`;状态存 `campaign_state/`
 - 单行试烧默认关闭(省一轮冷启);`--single` 开启后:试烧 → ⛔ 物理冷启 → 重跑 `run`(自动重打金窗、只烧剩余行)
 - 护栏:真烧两段确认(`Y` → 字面量 `BURN`,非交互需 `--yes`);金窗探针不在线即停;plan sha256 + bdf 防串卡;烧失败置 `aborted` 绝不自动重试
 - 自检:`python3 utils/ff_burn_flow.py --self-test`;冷启后验收(阶段 4)仍用 `verify` / `final_check.py`
@@ -334,7 +334,7 @@ memory.total: 81920 MiB  ← 需阶段 5 显存几何后才满血
 ### 5.3 NVLink(可选)
 - 清 `NVLINK_DISABLE`(FF 层)只是其一;**还需补焊 U11**(170HX 缺这颗 IC,不起参考时钟)+ 主机侧绕 ROM check。无 U11 时先只做"解锁层验证"。
 
-### 5.4 烧后一键安装包(可选,cmp170hx-install-pack/,不入 git)
+### 5.4 烧后一键安装包(可选,cmp170hx-install-pack/)
 
 烧完 FF 冷启 + 装好 nvidia-open 615.71.09 用户态后,可用自解压安装包一条命令完成
 "装模块(含 Gen3 补丁)→ Gen3 conf → 逐卡训练 → 验证带宽",替代本阶段手工命令:
