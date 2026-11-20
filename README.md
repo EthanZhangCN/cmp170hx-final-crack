@@ -59,6 +59,7 @@ sudo python3 utils/ff_burn_flow.py run --bdf 0000:2f:00.0 --single  # ③ 打毛
   - [5.1 满血 80GB 显存](#51-满血-80gb-显存)
   - [5.2 PCIe 实链(Gen3/Gen4)](#52-pcie-实链gen3gen4)
   - [5.3 NVLink](#53-nvlink可选)
+  - [5.4 烧后一键安装包](#54-烧后一键安装包可选cmp170hx-install-pack不入-git)
 - [阶段 6 · 转 A100 80GB PCIe(可选,高风险)](#阶段-6--转-a100-80gb-pcie可选高风险)
   - [6.0 原理](#60-原理boot-gate-比的是熔丝-devid不是vbios-devid)
   - [6.1 前置条件](#61-前置条件缺一不可)
@@ -332,6 +333,18 @@ memory.total: 81920 MiB  ← 需阶段 5 显存几何后才满血
 
 ### 5.3 NVLink(可选)
 - 清 `NVLINK_DISABLE`(FF 层)只是其一;**还需补焊 U11**(170HX 缺这颗 IC,不起参考时钟)+ 主机侧绕 ROM check。无 U11 时先只做"解锁层验证"。
+
+### 5.4 烧后一键安装包(可选,cmp170hx-install-pack/,不入 git)
+
+烧完 FF 冷启 + 装好 nvidia-open 615.71.09 用户态后,可用自解压安装包一条命令完成
+"装模块(含 Gen3 补丁)→ Gen3 conf → 逐卡训练 → 验证带宽",替代本阶段手工命令:
+```bash
+cd cmp170hx-install-pack && make      # 本机构建 → cmp170hx-ff-install.elf(约 24 MiB)
+sudo ./cmp170hx-ff-install.elf            # 目标机:默认到 Gen3+验证
+sudo ./cmp170hx-ff-install.elf --gen4     # 追加易失 E1+setpci Gen4(键入 GEN4 确认)
+```
+- 机制与坑详见 `cmp170hx-install-pack/README.md`;Gen4 阶段同样受 5.2 硬件前提与红线约束
+- Gen3 每次冷启后需重训:重跑安装包(幂等)或 `sudo bash tools/cmp-gen3.sh <bdf>`
 
 ### ✅ 达成判据
 - `nvidia-smi` 显存 81920 MiB;`pcie.link.gen.current` 到主板支持的最高代;要 NVLink 则 `nvidia-smi topo -m` 见链路。

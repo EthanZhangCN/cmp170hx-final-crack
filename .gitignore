@@ -21,6 +21,9 @@ build/
 *.hex
 *.rom
 
+# ---- 安装包打包子项目(不入 git,本地构建)----
+cmp170hx-install-pack/
+
 # ---- 本地实验/临时 ----
 *.log
 tmp/
