@@ -266,7 +266,8 @@ sudo python3 utils/ff_burn_flow.py reset                              # 换卡/�
 
 - 阶段序:`prep`(卸驱动+黑名单)→ `plan`(采集+计划+备份,打印烧写清单)→ `precheck`(dry-run 行判空)→ `glitch`(campaign 打金窗)→ `burn`(窗口内烧剩余全部);子命令同名可单跑;`burn-all` 为旧名兼容;状态存 `campaign_state/`
 - 单行试烧默认关闭(省一轮冷启);`--single` 开启后:试烧 → ⛔ 物理冷启 → 重跑 `run`(plan/precheck 自动跳过,直接重打金窗烧剩余行)
-- 护栏:金窗探针不在线即停;plan sha256 + bdf 防串卡;烧失败置 `aborted` 绝不自动重试;烧写清单在 plan 阶段打印留痕(`campaign_state/` 内可事后核查)
+- 自愈(每类一次,再失败即停):金窗探针不在线自动回退 prep+glitch 重打(冷启/驱动抢回都会丢窗口);dry-run 判空失败自动回退 plan 重算
+- 护栏:plan sha256 + bdf 防串卡;烧失败置 `aborted` 绝不自动重试;烧写清单在 plan 阶段打印留痕(`campaign_state/` 内可事后核查)
 - 自检:`python3 utils/ff_burn_flow.py --self-test`;冷启后验收(阶段 4)以 `ga100_ff.py verify` 对照 plan.json 的 defective 基线为准
   ⚠ `CMPGlitch/tools/final_check.py` 的 FUSE_CHECKS **硬编码了 CMPGlitch 那张卡的缺陷期望值**(FBP=0x840/FBPA=0xC03000)——缺陷不同的卡烧得再对也会 FAIL,只看它的 runtime/Xid 段
   ⚠ 回滚:`CMPGlitch/tools/ff_restore.py` 期望 CMPGlitch 原生 plan 键(`old_data/new_data`,ga100_ff 出的是 `old/new`),且用**烧前** ff.json 的 blank_rows 排行——恢复前需手动转换键名并**重新 dump** 取当前空行

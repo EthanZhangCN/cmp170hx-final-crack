@@ -203,6 +203,7 @@ if [[ -n "${BDF_ONLY}" ]]; then BDFS=("${BDF_ONLY}"); fi
 (( ${#BDFS[@]} > 0 )) || { err "未发现 CMP 170HX(10de:20c2/2082);用 --bdf= 指定"; exit 1; }
 declare -A G3RESULT
 G3FAIL=0
+G4FAIL=0
 for bdf in "${BDFS[@]}"; do
     if bash "${SCRIPT_DIR}/tools/cmp-gen3.sh" "${bdf}"; then
         G3RESULT[${bdf}]="Gen3 OK"
@@ -226,7 +227,12 @@ if (( DO_GEN4 == 1 )); then
 WARN
     for bdf in "${BDFS[@]}"; do
         [[ "${G3RESULT[${bdf}]}" == "Gen3 OK" ]] || { info "${bdf}: Gen3 未成,跳过 Gen4"; continue; }
-        python3 "${SCRIPT_DIR}/tools/pcie_gen4_probe.py" --bdf "${bdf}" --confirm
+        # probe 失败(卡失联/寄存器写被 gate)不能杀整个安装器:记 FAILED
+        # 继续下一卡,阶段 7 验收照常出汇总
+        if ! python3 "${SCRIPT_DIR}/tools/pcie_gen4_probe.py" --bdf "${bdf}" --confirm; then
+            G3RESULT[${bdf}]="Gen4 PROBE FAILED"; G4FAIL=1
+            err "${bdf}: Gen4 probe 失败(勿重试;物理冷启回 Gen3)"; continue
+        fi
         PARENT=$(basename "$(dirname "$(readlink -f "/sys/bus/pci/devices/${bdf}")")")
         setpci -s "${PARENT}" CAP_EXP+30.w=0004:000f
         setpci -s "${bdf}"     CAP_EXP+30.w=0004:000f
@@ -256,6 +262,11 @@ for bdf in "${BDFS[@]}"; do
 done
 
 echo ""
-[[ ${G3FAIL} -eq 0 ]] && echo "✅ 安装完成。冷启后 Gen3 需重训:重跑本包(幂等)或 sudo bash /path/cmp-gen3.sh <bdf>" \
-                    || echo "⚠ 部分卡 Gen3 未成;查上方输出。冷启后重跑本包即可重试。"
-exit "${G3FAIL}"
+if [[ ${G3FAIL} -eq 0 && ${G4FAIL} -eq 0 ]]; then
+    echo "✅ 安装完成。冷启后 Gen3 需重训:重跑本包(幂等)或 sudo bash /path/cmp-gen3.sh <bdf>"
+elif [[ ${G3FAIL} -ne 0 ]]; then
+    echo "⚠ 部分卡 Gen3 未成;查上方输出。冷启后重跑本包即可重试。"
+else
+    echo "⚠ 部分卡 Gen4 probe 失败;查上方输出。物理冷启回 Gen3 后重跑本包即可重试。"
+fi
+exit $(( G3FAIL | G4FAIL ))

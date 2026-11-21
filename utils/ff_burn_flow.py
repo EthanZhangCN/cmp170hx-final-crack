@@ -20,8 +20,10 @@
 
 安全设计:
   - 无人值守:计划审阅/判空/备份全部前置,烧写阶段无人工交互
-  - 每个写阶段入口只读 DSOV/CRC 探针,金窗不在则停(不自动重打毛刺)
-  - burn 前校验 state 中 card_serial + plan sha256,防串卡/换 plan
+  - 金窗探针不在线(single-burn 冷启续跑/窗口意外丢失):自动回退到
+    prep+glitch 重打一次(PhaseRetry;同一回退只重试一次,再失败才停)
+  - precheck 判空失败:自动回退到 plan 重算一次;再失败才停
+  - burn 前校验 state 中 plan sha256 + bdf,防串卡/换 plan
   - 烧失败 → phase=aborted,绝不自动重试
 """
 from __future__ import annotations
@@ -58,6 +60,19 @@ FF_FIRST_ROW = 222  # FF 区首行(probe 假记录指向已用行,绝不指向�
 
 class FlowError(Exception):
     """流程级失败(可读消息,不带堆栈)。"""
+
+
+class PhaseRetry(FlowError):
+    """可自愈失败:cmd_run 回退 kind 对应的阶段重新推进(每类只自愈一次)。
+
+    kind: "window" → 回退 prep+glitch(冷启/驱动抢回导致金窗丢失)
+          "plan"   → 回退 plan(卡况与计划不符)
+    """
+
+    def __init__(self, msg: str, kind: str):
+        super().__init__(msg)
+        assert kind in ("window", "plan")
+        self.kind = kind
 
 
 # ---------------------------------------------------------------- state ----
@@ -229,10 +244,11 @@ def phase_plan(args, st: dict) -> bool:
         plan = json.load(f)
     if not plan.get("records"):
         if plan.get("used_rows"):
-            raise FlowError("plan 成功但 records 为空(目标可能已全部达成)——人工确认后 reset 并跑 verify")
-        raise FlowError("plan 的 records 与 used_rows 均空——采集异常,回 glitch 重跑")
+            raise FlowError("plan 成功但 records 为空(目标可能已全部达成)"
+                            "——人工确认后 reset 并跑 ga100_ff.py verify")
+        raise FlowError("plan 的 records 与 used_rows 均空——采集异常,重跑 run")
     if not plan.get("ff_rows"):
-        raise FlowError("plan 的 ff_rows 为空——采集不完整(issue#1 防呆),回 glitch 重跑")
+        raise FlowError("plan 的 ff_rows 为空——采集不完整(issue#1 防呆),重跑 run")
     st["plan_file"] = out_path
     st["plan_sha256"] = sha256_file(out_path)
     st["card_serial_hint"] = plan.get("bdf")
@@ -260,22 +276,20 @@ def phase_plan(args, st: dict) -> bool:
 def phase_precheck(args, st: dict) -> bool:
     """dry-run 行判空(金窗外;FF 物理行读取与金窗无关,金窗断言在 burn 入口)。"""
     print("== precheck: dry-run 行判空 ==")
-    bak = os.path.join(args.state_dir, "ff_backup.json")
-    code, out, err = run_cmd([sys.executable, FF_DUMP, "--bdf", args.bdf,
-                              "--out", bak])
-    if code != 0 or not os.path.exists(bak):
-        raise FlowError(f"ff_dump 备份失败:{err.strip() or out[:200]}")
-    st["backup_file"] = bak
-    st["backup_sha256"] = sha256_file(bak)
-    print(f"  备份 {bak}(sha256 {st['backup_sha256'][:12]}…)")
+    if not st.get("plan_file") or not os.path.exists(st["plan_file"]):
+        raise FlowError("plan.json 不存在——重跑 run 从 plan 阶段重建")
+    with open(st["plan_file"], encoding="utf-8") as f:
+        plan = json.load(f)
+    _check_plan_integrity(args, st, plan)
 
     code, out, err = run_cmd(
         [sys.executable, GA100_FF, "burn", "--plan", st["plan_file"]])
     if "★非空!" in out:
         rows = [ln.strip() for ln in out.splitlines() if "★非空!" in ln]
-        raise FlowError("dry-run 发现非空行,拒绝继续(防覆盖已有记录):\n  "
-                        + "\n  ".join(rows)
-                        + "\n  → 卡况与计划不符,回 plan 重算(重跑 run 会自动从 plan 开始)")
+        raise PhaseRetry("dry-run 发现非空行(防覆盖已有记录):\n  "
+                         + "\n  ".join(rows)
+                         + "\n  → 卡况与计划不符,自动回退到 plan 重算",
+                         kind="plan")
     print("  dry-run 全部空行(金窗状态由 burn 入口探针把关)")
     return True
 
@@ -369,7 +383,9 @@ def phase_single_burn(args, st: dict) -> bool:
     print("== single-burn: 单行试烧 ==")
     dsov, crc = probe_window(args)
     if dsov != 0 or crc != 0x55:
-        raise FlowError(f"金窗不在(DSOV={dsov:#x} CRC={crc:#x})——先重跑 glitch")
+        raise PhaseRetry(f"金窗不在(DSOV={dsov:#x} CRC={crc:#x})"
+                         "——single-burn 冷启后窗口必丢,回 prep+glitch 重打",
+                         kind="window")
     if not st.get("plan_file") or not os.path.exists(st["plan_file"]):
         raise FlowError("state 引用的 plan.json 不存在——重跑 run 从 plan 阶段重建")
     with open(st["plan_file"], encoding="utf-8") as f:
@@ -395,7 +411,9 @@ def phase_burn_all(args, st: dict) -> bool:
     print("== burn: 烧剩余全部记录(窗口内) ==")
     dsov, crc = probe_window(args)
     if dsov != 0 or crc != 0x55:
-        raise FlowError(f"金窗不在(DSOV={dsov:#x} CRC={crc:#x})——先重跑 glitch")
+        raise PhaseRetry(f"金窗不在(DSOV={dsov:#x} CRC={crc:#x})"
+                         "——回 prep+glitch 重打(冷启/驱动抢回都会丢窗口)",
+                         kind="window")
     if not st.get("plan_file") or not os.path.exists(st["plan_file"]):
         raise FlowError("state 引用的 plan.json 不存在——重跑 run 从 plan 阶段重建")
     with open(st["plan_file"], encoding="utf-8") as f:
@@ -459,26 +477,52 @@ def cmd_run(args) -> int:
         phases_done.discard("burn-all")
     # 若上次已做过 single-burn 而这次没带 --single:已试烧行仍在 burned_rows,
     # burn 的裁剪逻辑天然跳过它,不会重复烧。
-    for ph in seq:
-        if ph in phases_done:
-            continue
-        fn = {"prep": phase_prep, "plan": phase_plan, "precheck": phase_precheck,
-              "glitch": phase_glitch, "single-burn": phase_single_burn,
-              "burn": phase_burn_all}.get(ph)
-        if fn is None:  # "done"
-            continue
-        ok = fn(args, st)
-        if not ok:
-            return 1
-        phases_done.add(ph)
-        st["phases_done"] = sorted(phases_done)  # 不按 seq 过滤:single-burn
-        # 的完成记录在 --single 与非 --single 序列间切换时也不能丢,否则重跑会重复试烧
-        st["phase"] = seq[min(seq.index(ph) + 1, len(seq) - 1)]
-        # single-burn 后必须人工冷启 —— 保存进度后退出
-        if ph == "single-burn":
+    retry_kind = None  # 本次 run 内已消费过的自愈种类(每类只自愈一次)
+    while True:
+        progressed = False
+        for ph in seq:
+            if ph in phases_done:
+                continue
+            fn = {"prep": phase_prep, "plan": phase_plan, "precheck": phase_precheck,
+                  "glitch": phase_glitch, "single-burn": phase_single_burn,
+                  "burn": phase_burn_all}.get(ph)
+            if fn is None:  # "done"
+                continue
+            try:
+                ok = fn(args, st)
+            except PhaseRetry as e:
+                # 可自愈:窗口丢失 → 回 prep+glitch 重打(冷启后驱动可能抢回);
+                # 判空失败 → 回 plan 重算。同一种自愈只做一次,再失败按硬失败处理。
+                kind = e.kind
+                # window → 重打金窗;plan → 重算计划。plan 重算后新计划必须
+                # 重新过 precheck 判空,precheck 一并回退
+                drop = ("prep", "glitch") if kind == "window" else ("plan", "precheck")
+                if retry_kind == kind:
+                    raise FlowError(f"{e}(已自愈重试一次仍失败——停,人工检查)"
+                                    ) from e
+                retry_kind = kind
+                for d in drop:
+                    phases_done.discard(d)
+                st["phases_done"] = sorted(phases_done)
+                print(f"  ↻ {e}\n    自动回退到 {'+'.join(drop) if len(drop) > 1 else drop[0]}"
+                      f" 重做(本次 run 内该类自愈仅一次)")
+                save_state(args, st)
+                progressed = True
+                break
+            if not ok:
+                return 1
+            phases_done.add(ph)
+            st["phases_done"] = sorted(phases_done)  # 不按 seq 过滤:single-burn
+            # 的完成记录在 --single 与非 --single 序列间切换时也不能丢,否则重跑会重复试烧
+            st["phase"] = seq[min(seq.index(ph) + 1, len(seq) - 1)]
+            # single-burn 后必须人工冷启 —— 保存进度后退出
+            if ph == "single-burn":
+                save_state(args, st)
+                return 0
             save_state(args, st)
-            return 0
-        save_state(args, st)
+            progressed = True
+        if not progressed:
+            break
     st["phase"] = "done"
     save_state(args, st)
     print(f"\n[run] 全部阶段完成。已烧行:{st.get('burned_rows')}")
@@ -665,6 +709,164 @@ def self_test() -> int:
             phases.add("burn"); phases.discard("burn-all")
         check("旧 state burn-all 迁移为 burn",
               "burn" in phases and "burn-all" not in phases)
+
+    # ---- 自愈场景 1:single-burn 冷启后重跑(glitch 已 done 但窗口必丢)----
+    # 探针第一次报窗口不在 → 自动回退 prep+glitch 重打;第二次金窗恢复 → 烧成
+    self_mod = sys.modules[__name__]
+    with tempfile.TemporaryDirectory() as td:
+        ap = argparse.Namespace(state_dir=td, bdf="0000:2f:00.0", single=False,
+                                test_row=None, budget=10, yes=True)
+        plan_path = os.path.join(td, "plan.json")
+        json.dump(FIXTURE_PLAN, open(plan_path, "w"))
+        save_state(ap, {"version": 1, "bdf": "0000:2f:00.0", "phase": "burn",
+                        "plan_file": plan_path,
+                        "plan_sha256": sha256_file(plan_path),
+                        "plan_records_rows": [223, 224, 225],
+                        "phases_done": ["prep", "plan", "precheck", "glitch"],
+                        "burned_rows": [], "history": []})
+        probe_states = iter([(1, 0x00), (0, 0x55), (0, 0x55)])
+        # 第 1 次:burn 探针报窗口丢 → 回退;第 2 次:phase_glitch 内探针;
+        # 第 3 次:burn 探针复核 → 烧写
+
+        orig_run_cmd, orig_probe = self_mod.run_cmd, self_mod.probe_window
+        self_mod.run_cmd = lambda *a, **k: (0, "", "")  # 不实际跑工具
+        self_mod.probe_window = lambda args_: next(probe_states)
+        orig_sub_run = self_mod.subprocess.run
+        self_mod.subprocess.run = lambda *a, **k: type("R", (), {
+            "returncode": 0, "stdout": "0000:2f:00.0 VGA ... 10de:20c2",
+            "stderr": ""})()
+
+        def burn_patch(cmd, env=None, sudo_needed=True):
+            tool = cmd[1] if len(cmd) > 1 else ""
+            if tool.endswith("ga100_ff.py"):
+                if cmd[2] == "plan":
+                    json.dump(FIXTURE_PLAN, open(plan_path, "w"))
+                    return 0, "", ""
+                if cmd[2] == "burn" and "--commit" in cmd:
+                    with open(cmd[cmd.index("--plan") + 1]) as f:
+                        sliced = json.load(f)
+                    out = ["--- armed ---"] + [
+                        f"  row {r['row']} <- {r['record']}  回读一致 OK"
+                        for r in sliced["records"]]
+                    return 0, "\n".join(out) + "\n", ""
+                return 0, ("--- DRY RUN ---\n  DSOV=0x00000000  CRC=0x00000055\n"
+                           "  row 223 <- 0x1  当前 0x00000000\n"
+                           "  row 224 <- 0x1  当前 0x00000000\n"
+                           "  row 225 <- 0x1  当前 0x00000000\n"), ""
+            return 0, "", ""
+
+        # campaign 需返回 goldilocks;plan/burn 走 burn_patch
+        def camp_patch(cmd, env=None, sudo_needed=True):
+            if cmd[1:2] == ["-m"]:
+                return 0, json.dumps({"goldilocks": True, "attempts": 2}), ""
+            return burn_patch(cmd, env, sudo_needed)
+
+        self_mod.run_cmd = camp_patch
+        try:
+            rc = self_mod.cmd_run(ap)
+        finally:
+            self_mod.run_cmd, self_mod.probe_window = orig_run_cmd, orig_probe
+            self_mod.subprocess.run = orig_sub_run
+        st_end = load_state(ap)
+        check("窗口丢失自愈后烧成 exit 0", rc == 0)
+        check("自愈终态 done", st_end.get("phase") == "done")
+        check("自愈后已烧 3 行", st_end.get("burned_rows") == [223, 224, 225])
+
+    # ---- 自愈场景 2:窗口持续丢失 → 自愈一次后硬停,绝不无限重打 ----
+    with tempfile.TemporaryDirectory() as td:
+        ap = argparse.Namespace(state_dir=td, bdf="0000:2f:00.0", single=False,
+                                test_row=None, budget=10, yes=True)
+        save_state(ap, {"version": 1, "bdf": "0000:2f:00.0", "phase": "burn",
+                        "phases_done": ["prep", "plan", "precheck", "glitch"],
+                        "burned_rows": [], "history": []})
+        orig_run_cmd, orig_probe = self_mod.run_cmd, self_mod.probe_window
+        self_mod.run_cmd = lambda *a, **k: (0, json.dumps(
+            {"goldilocks": True, "attempts": 2}), "")  # campaign 恒"成功"
+        self_mod.probe_window = lambda args_: (1, 0x00)  # 探针恒窗口不在
+        orig_sub_run = self_mod.subprocess.run
+        self_mod.subprocess.run = lambda *a, **k: type("R", (), {
+            "returncode": 0, "stdout": "0000:2f:00.0 VGA ... 10de:20c2",
+            "stderr": ""})()
+        try:
+            rc = self_mod.cmd_run(ap)  # 预期:抛 FlowError → main 捕获 rc=1
+            caught = None
+        except FlowError:
+            caught = True
+            rc = 1
+        finally:
+            self_mod.run_cmd, self_mod.probe_window = orig_run_cmd, orig_probe
+            self_mod.subprocess.run = orig_sub_run
+        st_end = load_state(ap)
+        check("窗口持续丢失→硬停(非无限重打)", caught is True and rc == 1)
+        check("硬停后未烧行", st_end.get("burned_rows") in (None, []))
+
+    # ---- 自愈场景 3:precheck 单阶段模式无 plan → 友好报错不裸崩 ----
+    with tempfile.TemporaryDirectory() as td:
+        ap = argparse.Namespace(state_dir=td, bdf="0000:2f:00.0", single=False,
+                                test_row=None, budget=10, yes=True)
+        st = load_state(ap)
+        try:
+            phase_precheck(ap, st)
+            check("precheck 无 plan 友好报错", False)
+        except FlowError as e:
+            check("precheck 无 plan 友好报错", "plan.json 不存在" in str(e))
+
+    # ---- 自愈场景 4:plan 自愈回退必须连带 precheck(新计划重新判空)----
+    # 首轮 precheck dry-run 报非空行 → 回退 plan+precheck;重算后判空通过 → 烧成。
+    # 断言:plan/precheck 各执行 2 次(而非 plan 2 次 precheck 1 次)。
+    with tempfile.TemporaryDirectory() as td:
+        ap = argparse.Namespace(state_dir=td, bdf="0000:2f:00.0", single=False,
+                                test_row=None, budget=10, yes=True)
+        plan_path = os.path.join(td, "plan.json")
+        counts = {"plan": 0, "dryrun": 0}
+
+        def plan_patch(cmd, env=None, sudo_needed=True):
+            if cmd[1:2] == ["-m"]:
+                return 0, json.dumps({"goldilocks": True, "attempts": 2}), ""
+            tool = cmd[1] if len(cmd) > 1 else ""
+            if tool.endswith("ga100_ff.py"):
+                if cmd[2] == "plan":
+                    counts["plan"] += 1
+                    json.dump(FIXTURE_PLAN, open(plan_path, "w"))
+                    return 0, "", ""
+                if cmd[2] == "burn" and "--commit" in cmd:
+                    with open(cmd[cmd.index("--plan") + 1]) as f:
+                        sliced = json.load(f)
+                    out = ["--- armed ---"] + [
+                        f"  row {r['row']} <- {r['record']}  回读一致 OK"
+                        for r in sliced["records"]]
+                    return 0, "\n".join(out) + "\n", ""
+                counts["dryrun"] += 1
+                # 首轮(第 1 次)报非空行触发回退;第 2 次起全空行
+                if counts["dryrun"] == 1:
+                    return 0, ("--- DRY RUN ---\n  DSOV=0x00000000  CRC=0x00000055\n"
+                               "  row 223 <- 0x1  当前 0x0000000F  ★非空!\n"), ""
+                return 0, ("--- DRY RUN ---\n  DSOV=0x00000000  CRC=0x00000055\n"
+                           "  row 223 <- 0x1  当前 0x00000000\n"
+                           "  row 224 <- 0x1  当前 0x00000000\n"
+                           "  row 225 <- 0x1  当前 0x00000000\n"), ""
+            if tool.endswith("ff_dump.py"):
+                json.dump({"rows": {}}, open(cmd[cmd.index("--out") + 1], "w"))
+                return 0, "", ""
+            return 0, "", ""
+
+        orig_run_cmd, orig_probe = self_mod.run_cmd, self_mod.probe_window
+        self_mod.run_cmd = plan_patch
+        self_mod.probe_window = lambda args_: (0, 0x55)
+        orig_sub_run = self_mod.subprocess.run
+        self_mod.subprocess.run = lambda *a, **k: type("R", (), {
+            "returncode": 0, "stdout": "0000:2f:00.0 VGA ... 10de:20c2",
+            "stderr": ""})()
+        try:
+            rc = self_mod.cmd_run(ap)
+        finally:
+            self_mod.run_cmd, self_mod.probe_window = orig_run_cmd, orig_probe
+            self_mod.subprocess.run = orig_sub_run
+        st_end = load_state(ap)
+        check("plan 自愈链路 exit 0", rc == 0)
+        check("plan 重算 2 次", counts["plan"] == 2)
+        check("precheck 重走 2 次", counts["dryrun"] == 2)
+        check("plan 自愈后烧成 3 行", st_end.get("burned_rows") == [223, 224, 225])
 
     print(("\nSELF-TEST FAILED: %s" % fails) if fails else "\nSELF-TEST OK(全部离线断言通过)")
     return 1 if fails else 0
