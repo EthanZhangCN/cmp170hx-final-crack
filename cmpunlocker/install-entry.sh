@@ -224,23 +224,19 @@ if (( DO_GEN4 == 1 )); then
   │  • 硬件前提:Gen4 根端口 + 24×0402 电容 mod + 直插 x16,缺一则停在 Gen3 │
   └─────────────────────────────────────────────────────────────────────┘
 WARN
-    read -r -p '  确认继续请键入 GEN4: ' ans
-    [[ "${ans}" == "GEN4" ]] || { info "跳过 Gen4"; }
-    if [[ "${ans}" == "GEN4" ]]; then
-        for bdf in "${BDFS[@]}"; do
-            [[ "${G3RESULT[${bdf}]}" == "Gen3 OK" ]] || { info "${bdf}: Gen3 未成,跳过 Gen4"; continue; }
-            python3 "${SCRIPT_DIR}/tools/pcie_gen4_probe.py" --bdf "${bdf}" --confirm
-            PARENT=$(basename "$(dirname "$(readlink -f "/sys/bus/pci/devices/${bdf}")")")
-            setpci -s "${PARENT}" CAP_EXP+30.w=0004:000f
-            setpci -s "${bdf}"     CAP_EXP+30.w=0004:000f
-            setpci -s "${PARENT}" CAP_EXP+10.w=0020:0020
-            sleep 2
-            STA="$(setpci -s "${bdf}" CAP_EXP+12.w)"
-            GEN=$(( 16#${STA} & 15 ))
-            if (( GEN == 4 )); then G3RESULT[${bdf}]="Gen4 OK"; ok "${bdf}: LnkSta ${STA} → Gen4"
-            else err "${bdf}: LnkSta ${STA} 仍 Gen${GEN} —— 停(勿重试;物理冷启回 Gen3)"; fi
-        done
-    fi
+    for bdf in "${BDFS[@]}"; do
+        [[ "${G3RESULT[${bdf}]}" == "Gen3 OK" ]] || { info "${bdf}: Gen3 未成,跳过 Gen4"; continue; }
+        python3 "${SCRIPT_DIR}/tools/pcie_gen4_probe.py" --bdf "${bdf}" --confirm
+        PARENT=$(basename "$(dirname "$(readlink -f "/sys/bus/pci/devices/${bdf}")")")
+        setpci -s "${PARENT}" CAP_EXP+30.w=0004:000f
+        setpci -s "${bdf}"     CAP_EXP+30.w=0004:000f
+        setpci -s "${PARENT}" CAP_EXP+10.w=0020:0020
+        sleep 2
+        STA="$(setpci -s "${bdf}" CAP_EXP+12.w)"
+        GEN=$(( 16#${STA} & 15 ))
+        if (( GEN == 4 )); then G3RESULT[${bdf}]="Gen4 OK"; ok "${bdf}: LnkSta ${STA} → Gen4"
+        else err "${bdf}: LnkSta ${STA} 仍 Gen${GEN} —— 停(勿重试;物理冷启回 Gen3)"; fi
+    done
 fi
 
 # ------------------------------------------------------------------ 阶段 6b 验证
