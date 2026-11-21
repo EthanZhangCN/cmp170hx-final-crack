@@ -255,7 +255,7 @@ sudo python3 utils/ga100_ff.py burn --plan plan.json --commit     # 真烧(永�
 
 ### 3.4 一键流程(可选,utils/ff_burn_flow.py)
 
-前置:环境用 `utils/ff_env_setup.py` 备好(见阶段 −1)。本脚本自动推进阶段 0.2 → 3 的主机侧命令(卸驱动→打金窗→出计划→dry-run+备份→真烧),断点续跑,终点 = 记录全部烧写完成:
+前置:环境用 `utils/ff_env_setup.py` 备好(见阶段 −1)。**命中即烧**(无人值守):不需要金窗的工作(出计划/审阅/判空/备份)全部在打毛刺之前完成,金窗命中后窗口内只做"探针复核→烧写→回读",全程无人工交互,断点续跑,终点 = 记录全部烧写完成:
 
 ```bash
 sudo python3 utils/ff_burn_flow.py run --bdf 0000:2f:00.0            # 自动推进到烧完
@@ -264,9 +264,9 @@ python3 utils/ff_burn_flow.py status                                  # 随时�
 sudo python3 utils/ff_burn_flow.py reset                              # 换卡/重来前清状态
 ```
 
-- 子命令:`run`(自动续跑)/ `prep` / `glitch` / `plan` / `precheck` / `single-burn` / `burn-all` / `status` / `reset`;状态存 `campaign_state/`
-- 单行试烧默认关闭(省一轮冷启);`--single` 开启后:试烧 → ⛔ 物理冷启 → 重跑 `run`(自动重打金窗、只烧剩余行)
-- 护栏:真烧两段确认(`Y` → 字面量 `BURN`,非交互需 `--yes`);金窗探针不在线即停;plan sha256 + bdf 防串卡;烧失败置 `aborted` 绝不自动重试
+- 阶段序:`prep`(卸驱动+黑名单)→ `plan`(采集+计划+备份,打印烧写清单)→ `precheck`(dry-run 行判空)→ `glitch`(campaign 打金窗)→ `burn`(窗口内烧剩余全部);子命令同名可单跑;`burn-all` 为旧名兼容;状态存 `campaign_state/`
+- 单行试烧默认关闭(省一轮冷启);`--single` 开启后:试烧 → ⛔ 物理冷启 → 重跑 `run`(plan/precheck 自动跳过,直接重打金窗烧剩余行)
+- 护栏:金窗探针不在线即停;plan sha256 + bdf 防串卡;烧失败置 `aborted` 绝不自动重试;烧写清单在 plan 阶段打印留痕(`campaign_state/` 内可事后核查)
 - 自检:`python3 utils/ff_burn_flow.py --self-test`;冷启后验收(阶段 4)以 `ga100_ff.py verify` 对照 plan.json 的 defective 基线为准
   ⚠ `CMPGlitch/tools/final_check.py` 的 FUSE_CHECKS **硬编码了 CMPGlitch 那张卡的缺陷期望值**(FBP=0x840/FBPA=0xC03000)——缺陷不同的卡烧得再对也会 FAIL,只看它的 runtime/Xid 段
   ⚠ 回滚:`CMPGlitch/tools/ff_restore.py` 期望 CMPGlitch 原生 plan 键(`old_data/new_data`,ga100_ff 出的是 `old/new`),且用**烧前** ff.json 的 blank_rows 排行——恢复前需手动转换键名并**重新 dump** 取当前空行

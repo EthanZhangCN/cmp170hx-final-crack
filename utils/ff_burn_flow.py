@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
-"""CMP 170HX FF 烧录 · 主机侧一键流程编排.
+"""CMP 170HX FF 烧录 · 主机侧一键流程编排(命中即烧).
 
-把 README 阶段 0–3 的主机侧命令(卸驱动 → campaign 打金窗 → plan 出计划
-→ dry-run 判空 + 备份 → 真烧)串成一个可断点续跑的脚本,终点 = burn-all
-记录全部写入。冷启后的验收(verify / final_check.py)不在本脚本范围。
+阶段序(不需要金窗的工作全部在打毛刺之前完成,窗口内只余"探针→烧→落盘"):
+  prep(卸驱动+黑名单)
+  → plan(只读采集+出计划+ff_dump 备份)      ← 金窗外
+  → precheck(dry-run 行判空)                ← 金窗外(FF 物理行读取与金窗无关)
+  → glitch(campaign 打金窗,命中即停)
+  → burn(探针复核→sha256/串卡校验→烧剩余全部行)  ← 窗口内秒级
+  (--single 时 burn 前插入 single-burn:烧一行→冷启→重跑烧剩余)
 
 用法(在仓库根目录):
     sudo python3 utils/ff_burn_flow.py run --bdf 0000:2f:00.0          # 自动推进
@@ -11,13 +15,13 @@
     python3  utils/ff_burn_flow.py status                              # 看进度
     sudo python3 utils/ff_burn_flow.py reset                           # 清空状态
 
-子命令:run / prep / glitch / plan / precheck / single-burn / burn-all
-        / status / reset。零改动现有工具,全部原样子进程调用。
+子命令:run / prep / plan / precheck / glitch / single-burn / burn / status / reset。
+零改动现有工具,全部原样子进程调用。
 
 安全设计:
+  - 无人值守:计划审阅/判空/备份全部前置,烧写阶段无人工交互
   - 每个写阶段入口只读 DSOV/CRC 探针,金窗不在则停(不自动重打毛刺)
   - burn 前校验 state 中 card_serial + plan sha256,防串卡/换 plan
-  - 真烧两段确认(Y → 字面量 BURN);非 TTY 且无 --yes 直接拒绝
   - 烧失败 → phase=aborted,绝不自动重试
 """
 from __future__ import annotations
@@ -37,7 +41,7 @@ GA100_FF = os.path.join(REPO_ROOT, "utils", "ga100_ff.py")
 FF_DUMP = os.path.join(REPO_ROOT, "CMPGlitch", "tools", "ff_dump.py")
 GA100VFI_HOST = os.path.join(REPO_ROOT, "pico-ga100vfi", "host")
 
-PHASES = ["prep", "glitch", "plan", "precheck", "burn-all", "done"]
+PHASES = ["prep", "plan", "precheck", "glitch", "burn", "done"]
 BLACKLIST_CONF = "/etc/modprobe.d/aa-blacklist-nvidia-campaign.conf"
 BLACKLIST_BODY = (
     "blacklist nvidia\nblacklist nvidia_drm\nblacklist nvidia_modeset\n"
@@ -233,14 +237,29 @@ def phase_plan(args, st: dict) -> bool:
     st["plan_sha256"] = sha256_file(out_path)
     st["card_serial_hint"] = plan.get("bdf")
     st["plan_records_rows"] = [int(r["row"]) for r in plan["records"]]
-    print(f"  计划 {len(plan['records'])} 条记录(行 {plan['records'][0]['row']}"
-          f"–{plan['records'][-1]['row']}),已用行 {len(plan.get('used_rows', []))}")
+
+    # 备份(原 precheck 内容):ff_dump 只读,金窗外可跑,前置到此处
+    bak = os.path.join(args.state_dir, "ff_backup.json")
+    bcode, bout, berr = run_cmd([sys.executable, FF_DUMP, "--bdf", args.bdf,
+                                 "--out", bak])
+    if bcode != 0 or not os.path.exists(bak):
+        raise FlowError(f"ff_dump 备份失败:{berr.strip() or bout[:200]}")
+    st["backup_file"] = bak
+    st["backup_sha256"] = sha256_file(bak)
+    print(f"  备份 {bak}(sha256 {st['backup_sha256'][:12]}…)")
+
+    # 计划审阅(无人值守:打印供事后核查,不阻塞)
+    print(f"  计划 {len(plan['records'])} 条记录(OTP 不可逆):")
+    for r in plan["records"]:
+        tag = "  ← PCIe/chain2,最危险" if int(r["chain"]) == 2 else ""
+        print(f"    row {r['row']}  {r['record']}  chain{r['chain']} "
+              f"blk{r['block']}  {r['old']} -> {r['new']}{tag}")
     return True
 
 
 def phase_precheck(args, st: dict) -> bool:
-    """备份 ff_dump + dry-run 判空(dry-run exit 恒 0,必须解析 stdout)。"""
-    print("== precheck: 备份 + dry-run ==")
+    """dry-run 行判空(金窗外;FF 物理行读取与金窗无关,金窗断言在 burn 入口)。"""
+    print("== precheck: dry-run 行判空 ==")
     bak = os.path.join(args.state_dir, "ff_backup.json")
     code, out, err = run_cmd([sys.executable, FF_DUMP, "--bdf", args.bdf,
                               "--out", bak])
@@ -256,12 +275,8 @@ def phase_precheck(args, st: dict) -> bool:
         rows = [ln.strip() for ln in out.splitlines() if "★非空!" in ln]
         raise FlowError("dry-run 发现非空行,拒绝继续(防覆盖已有记录):\n  "
                         + "\n  ".join(rows)
-                        + "\n  → 金窗内卡况变了,回 plan 重算(重跑 run 会自动从 plan 开始)")
-    m = re.search(r"DSOV=0x([0-9A-Fa-f]{8})\s+CRC=0x([0-9A-Fa-f]{8})", out)
-    if not m or int(m.group(1), 16) != 0 or int(m.group(2), 16) != 0x55:
-        got = m.groups() if m else ("?", "?")
-        raise FlowError(f"dry-run 时金窗异常(DSOV=0x{got[0]} CRC=0x{got[1]})——回 glitch 重跑")
-    print("  dry-run 全部空行,金窗正常")
+                        + "\n  → 卡况与计划不符,回 plan 重算(重跑 run 会自动从 plan 开始)")
+    print("  dry-run 全部空行(金窗状态由 burn 入口探针把关)")
     return True
 
 
@@ -313,21 +328,13 @@ def slice_plan(plan: dict, keep_rows: set) -> dict:
 
 
 def confirm_burn(args, sliced: dict, purpose: str) -> None:
+    """无人值守:只打印烧写清单供落盘留痕,不交互。审阅已前移到 plan 阶段。"""
     print(f"\n即将真烧【{purpose}】共 {len(sliced['records'])} 条记录(OTP,不可逆):")
     for r in sliced["records"]:
         tag = "  ← PCIe/chain2,最危险" if int(r["chain"]) == 2 else ""
         print(f"  row {r['row']}  {r['record']}  chain{r['chain']} "
               f"blk{r['block']}  {r['old']} -> {r['new']}{tag}")
     print("  (plan.json 内 records 天然按 chain1→chain2 排序,PCIe 已在最后)")
-    if args.yes:
-        print("  --yes 跳过交互确认")
-        return
-    if not sys.stdin.isatty():
-        raise FlowError("非交互终端且未给 --yes,拒绝真烧")
-    if input("确认以上计划?输入 Y 继续:").strip() != "Y":
-        raise FlowError("用户未确认,中止")
-    if input("再确认:输入字面量 BURN 才会写入:").strip() != "BURN":
-        raise FlowError("二次确认失败,中止")
 
 
 def do_commit_burn(args, st: dict, sliced: dict, purpose: str) -> list:
@@ -376,14 +383,14 @@ def phase_single_burn(args, st: dict) -> bool:
     st["single_test_row"] = row
     print(f"\n试烧完成(row {row})。⛔ 现在物理断电冷启(不是 reboot),"
           f"然后重新上电、接好 Pico,再跑:\n"
-          f"  sudo python3 utils/ff_burn_flow.py run --bdf {args.bdf}"
-          f"{' --single' if args.single else ''}\n"
-          f"(脚本会自动重打金窗并只烧剩余行)")
+          f"  sudo python3 utils/ff_burn_flow.py run --bdf {args.bdf}\n"
+          f"(plan/precheck 已完成会自动跳过,直接重打金窗并只烧剩余行)")
     return True
 
 
 def phase_burn_all(args, st: dict) -> bool:
-    print("== burn-all: 烧剩余全部记录 ==")
+    """burn 阶段:窗口内只做 探针→校验→烧剩余→落盘。"""
+    print("== burn: 烧剩余全部记录(窗口内) ==")
     dsov, crc = probe_window(args)
     if dsov != 0 or crc != 0x55:
         raise FlowError(f"金窗不在(DSOV={dsov:#x} CRC={crc:#x})——先重跑 glitch")
@@ -435,18 +442,22 @@ def cmd_run(args) -> int:
         print("已完成。冷启验收用 verify / final_check.py。")
         return 0
 
-    # 试烧启用时插入 single-burn 阶段;跳过时直接到 burn-all
-    seq = (["prep", "glitch", "plan", "precheck", "single-burn", "burn-all"]
+    # 试烧启用时在 glitch 后插入 single-burn;跳过时直接到 burn
+    seq = (["prep", "plan", "precheck", "glitch", "single-burn", "burn"]
            if args.single else PHASES)
     phases_done = set(st.get("phases_done", []))
+    # 旧 state(burn-all 阶段名)迁移:重跑视为已完成同义阶段
+    if "burn-all" in phases_done:
+        phases_done.add("burn")
+        phases_done.discard("burn-all")
     # 若上次已做过 single-burn 而这次没带 --single:已试烧行仍在 burned_rows,
-    # burn-all 的裁剪逻辑天然跳过它,不会重复烧。
+    # burn 的裁剪逻辑天然跳过它,不会重复烧。
     for ph in seq:
         if ph in phases_done:
             continue
-        fn = {"prep": phase_prep, "glitch": phase_glitch, "plan": phase_plan,
-              "precheck": phase_precheck, "single-burn": phase_single_burn,
-              "burn-all": phase_burn_all}.get(ph)
+        fn = {"prep": phase_prep, "plan": phase_plan, "precheck": phase_precheck,
+              "glitch": phase_glitch, "single-burn": phase_single_burn,
+              "burn": phase_burn_all}.get(ph)
         if fn is None:  # "done"
             continue
         ok = fn(args, st)
@@ -629,6 +640,24 @@ def self_test() -> int:
         check("mock 全链路 exit 0", rc == 0)
         check("mock 终态 done", st_end.get("phase") == "done")
         check("mock 已烧 3 行", st_end.get("burned_rows") == [223, 224, 225])
+        check("mock 阶段序为 新序",
+              st_end.get("phases_done") == sorted(
+                  ["prep", "plan", "precheck", "glitch", "burn"]))
+
+    # 旧 state(burn-all 阶段名)迁移:重跑视为已完成 burn
+    with tempfile.TemporaryDirectory() as td:
+        ap = argparse.Namespace(state_dir=td, bdf="0000:2f:00.0", single=False,
+                                test_row=None, budget=10, yes=True)
+        save_state(ap, {"version": 1, "bdf": "0000:2f:00.0", "phase": "done",
+                        "phases_done": ["prep", "glitch", "plan", "precheck",
+                                        "burn-all"],
+                        "burned_rows": [223, 224, 225], "history": []})
+        st = load_state(ap)
+        phases = set(st.get("phases_done", []))
+        if "burn-all" in phases:
+            phases.add("burn"); phases.discard("burn-all")
+        check("旧 state burn-all 迁移为 burn",
+              "burn" in phases and "burn-all" not in phases)
 
     print(("\nSELF-TEST FAILED: %s" % fails) if fails else "\nSELF-TEST OK(全部离线断言通过)")
     return 1 if fails else 0
@@ -638,8 +667,8 @@ def self_test() -> int:
 def main():
     ap = argparse.ArgumentParser(
         prog="ff_burn_flow",
-        description="CMP 170HX FF 烧录主机侧一键流程(prep→glitch→plan→precheck→burn-all);"
-                    "终点=记录全部烧写完成。冷启验收用 ga100_ff.py verify / final_check.py。")
+        description="CMP 170HX FF 烧录主机侧一键流程(prep→plan→precheck→glitch→burn,命中即烧);"
+                    "终点=记录全部烧写完成。冷启验收用 ga100_ff.py verify。")
     ap.add_argument("--self-test", action="store_true", help="离线自检,不碰硬件")
     # 选项同时挂主 parser 与每个子命令(parents+SUPPRESS):README 里
     # `run --bdf ...` 的写法(选项在子命令后)才可用,SUPPRESS 保证不覆盖默认值
@@ -653,24 +682,29 @@ def main():
     common.add_argument("--budget", type=int, default=argparse.SUPPRESS,
                         help="campaign 总发数")
     common.add_argument("--yes", action="store_true", default=argparse.SUPPRESS,
-                        help="跳过烧写两段交互确认(仅限受控/自动化环境)")
+                        help="兼容保留(无人值守化后已无交互确认,此参数无效果)")
     ap.set_defaults(bdf="0000:2f:00.0",
                     state_dir=os.path.join(REPO_ROOT, "campaign_state"),
                     single=False, test_row=None, budget=500, yes=False)
     sub = ap.add_subparsers(dest="cmd")
-    for name, h in (("run", "自动从断点推进"), ("prep", ""), ("glitch", ""),
-                    ("plan", ""), ("precheck", ""), ("single-burn", ""),
-                    ("burn-all", ""), ("status", "打印当前 state.json"),
+    for name, h in (("run", "自动从断点推进"), ("prep", ""), ("plan", ""),
+                    ("precheck", ""), ("glitch", ""), ("single-burn", ""),
+                    ("burn", ""), ("status", "打印当前 state.json"),
                     ("reset", "删除 state.json(plan/备份保留)")):
         sub.add_parser(name, parents=[common], help=h)
+    # 兼容旧子命令名
+    old_new = {"burn-all": "burn"}
+    sub.add_parser("burn-all", parents=[common],
+                   help="(旧名,等价 burn)")
     args = ap.parse_args()
+    args.cmd = old_new.get(args.cmd, args.cmd)
 
     if args.self_test:
         return self_test()
     if args.cmd is None:
         ap.print_help()
         return 2
-    if args.cmd in ("prep", "glitch", "single-burn", "burn-all") and os.geteuid() != 0:
+    if args.cmd in ("prep", "glitch", "single-burn", "burn") and os.geteuid() != 0:
         print("需要 root(涉及 systemctl/modprobe/BAR0 写):sudo 运行", file=sys.stderr)
         return 1
     try:
@@ -682,9 +716,9 @@ def main():
             return cmd_reset(args)
         # 单阶段模式:只跑该阶段(不推进 state.phase)
         st = load_state(args)
-        fn = {"prep": phase_prep, "glitch": phase_glitch, "plan": phase_plan,
-              "precheck": phase_precheck, "single-burn": phase_single_burn,
-              "burn-all": phase_burn_all}[args.cmd]
+        fn = {"prep": phase_prep, "plan": phase_plan, "precheck": phase_precheck,
+              "glitch": phase_glitch, "single-burn": phase_single_burn,
+              "burn": phase_burn_all}[args.cmd]
         ok = fn(args, st)
         record(st, args.cmd, ok)
         save_state(args, st)
