@@ -235,6 +235,9 @@ def phase_glitch(args, st: dict) -> bool:
 
 def phase_plan(args, st: dict) -> bool:
     print("== plan: 只读采集 + 出计划 ==")
+    # 首次 run 时 state 目录尚不存在:plan 是第一个写它的阶段(新序里 glitch
+    # 在后),ga100_ff 的 open(out,"w") 不建目录,必须先建
+    os.makedirs(args.state_dir, exist_ok=True)
     out_path = os.path.join(args.state_dir, "plan.json")
     code, out, err = run_cmd(
         [sys.executable, GA100_FF, "plan", "--bdf", args.bdf, "-o", out_path])
@@ -471,9 +474,16 @@ def cmd_run(args) -> int:
     seq = (["prep", "plan", "precheck", "glitch", "single-burn", "burn"]
            if args.single else PHASES)
     phases_done = set(st.get("phases_done", []))
-    # 旧 state(burn-all 阶段名)迁移:重跑视为已完成同义阶段
+    # 旧 state(burn-all 阶段名)迁移:仅当已烧行确实覆盖了计划的全部行时才算
+    # burn 完成——旧版部分烧写后中断的 state 若直接迁移会把剩余行永久漏烧
     if "burn-all" in phases_done:
-        phases_done.add("burn")
+        planned = set(st.get("plan_records_rows") or [])
+        burned = set(st.get("burned_rows") or [])
+        if not planned or planned <= burned:
+            phases_done.add("burn")
+        else:
+            print(f"  ⚠ 旧 state 标记 burn-all 完成但仅烧 {sorted(burned)}/"
+                  f"{sorted(planned)}——迁移为未完成,补烧剩余行")
         phases_done.discard("burn-all")
     # 若上次已做过 single-burn 而这次没带 --single:已试烧行仍在 burned_rows,
     # burn 的裁剪逻辑天然跳过它,不会重复烧。
@@ -709,6 +719,59 @@ def self_test() -> int:
             phases.add("burn"); phases.discard("burn-all")
         check("旧 state burn-all 迁移为 burn",
               "burn" in phases and "burn-all" not in phases)
+
+    # ---- 对抗场景:旧 state burn-all 部分烧 → 迁移不得漏烧剩余行 ----
+    with tempfile.TemporaryDirectory() as td:
+        ap = argparse.Namespace(state_dir=td, bdf="0000:2f:00.0", single=False,
+                                test_row=None, budget=5, yes=True)
+        pp = os.path.join(td, "plan.json")
+        json.dump(FIXTURE_PLAN, open(pp, "w"))
+        save_state(ap, {"version": 1, "bdf": "0000:2f:00.0", "phase": "burn-all",
+                        "phases_done": ["prep", "glitch", "plan", "precheck",
+                                        "burn-all"],
+                        "burned_rows": [223, 224], "plan_file": pp,
+                        "plan_sha256": sha256_file(pp),
+                        "plan_records_rows": [223, 224, 225], "history": []})
+        committed = []
+
+        def part_patch(cmd, env=None, sudo_needed=True):
+            if cmd[1:2] == ["-m"]:
+                return 0, json.dumps({"goldilocks": True, "attempts": 2}), ""
+            tool = cmd[1] if len(cmd) > 1 else ""
+            if tool.endswith("ga100_ff.py"):
+                if cmd[2] == "burn" and "--commit" in cmd:
+                    with open(cmd[cmd.index("--plan") + 1]) as f:
+                        sliced = json.load(f)
+                    committed.extend(r["row"] for r in sliced["records"])
+                    out = ["--- armed ---"] + [
+                        f"  row {r['row']} <- {r['record']}  回读一致 OK"
+                        for r in sliced["records"]]
+                    return 0, "\n".join(out) + "\n", ""
+                return 0, ("--- DRY RUN ---\n  DSOV=0x00000000  CRC=0x00000055\n"
+                           "  row 223 <- 0x1  当前 0x00000000\n"
+                           "  row 224 <- 0x1  当前 0x00000000\n"
+                           "  row 225 <- 0x1  当前 0x00000000\n"), ""
+            if tool.endswith("ff_dump.py"):
+                json.dump({"rows": {}}, open(cmd[cmd.index("--out") + 1], "w"))
+                return 0, "", ""
+            return 0, "", ""
+
+        orig_run_cmd, orig_probe = self_mod.run_cmd, self_mod.probe_window
+        self_mod.run_cmd = part_patch
+        self_mod.probe_window = lambda args_: (0, 0x55)
+        orig_sub_run = self_mod.subprocess.run
+        self_mod.subprocess.run = lambda *a, **k: type("R", (), {
+            "returncode": 0, "stdout": "0000:2f:00.0 VGA ... 10de:20c2",
+            "stderr": ""})()
+        try:
+            rc = self_mod.cmd_run(ap)
+        finally:
+            self_mod.run_cmd, self_mod.probe_window = orig_run_cmd, orig_probe
+            self_mod.subprocess.run = orig_sub_run
+        st_end = load_state(ap)
+        check("旧 state 部分烧迁移补烧 exit 0", rc == 0)
+        check("补烧仅剩余行 225", committed == [225])
+        check("补烧后全行覆盖", st_end.get("burned_rows") == [223, 224, 225])
 
     # ---- 自愈场景 1:single-burn 冷启后重跑(glitch 已 done 但窗口必丢)----
     # 探针第一次报窗口不在 → 自动回退 prep+glitch 重打;第二次金窗恢复 → 烧成
