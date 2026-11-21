@@ -370,6 +370,8 @@ def phase_single_burn(args, st: dict) -> bool:
     dsov, crc = probe_window(args)
     if dsov != 0 or crc != 0x55:
         raise FlowError(f"金窗不在(DSOV={dsov:#x} CRC={crc:#x})——先重跑 glitch")
+    if not st.get("plan_file") or not os.path.exists(st["plan_file"]):
+        raise FlowError("state 引用的 plan.json 不存在——重跑 run 从 plan 阶段重建")
     with open(st["plan_file"], encoding="utf-8") as f:
         plan = json.load(f)
     _check_plan_integrity(args, st, plan)
@@ -394,6 +396,8 @@ def phase_burn_all(args, st: dict) -> bool:
     dsov, crc = probe_window(args)
     if dsov != 0 or crc != 0x55:
         raise FlowError(f"金窗不在(DSOV={dsov:#x} CRC={crc:#x})——先重跑 glitch")
+    if not st.get("plan_file") or not os.path.exists(st["plan_file"]):
+        raise FlowError("state 引用的 plan.json 不存在——重跑 run 从 plan 阶段重建")
     with open(st["plan_file"], encoding="utf-8") as f:
         plan = json.load(f)
     _check_plan_integrity(args, st, plan)
@@ -418,6 +422,9 @@ def phase_burn_all(args, st: dict) -> bool:
 
 
 def _check_plan_integrity(args, st: dict, plan: dict) -> None:
+    if not st.get("plan_file") or not os.path.exists(st["plan_file"]):
+        raise FlowError("state 引用的 plan.json 不存在(campaign_state 被清理?)"
+                        "——重跑 run 从 plan 阶段重建")
     cur = sha256_file(st["plan_file"])
     if st.get("plan_sha256") and cur != st["plan_sha256"]:
         raise FlowError("plan.json 与 state 记录的 sha256 不符(文件被改?)——中止,人工核查")
@@ -436,7 +443,7 @@ def cmd_run(args) -> int:
         print("state 处于 aborted(上次烧写失败)。绝不自动重试。\n"
               f"  原因:{st.get('aborted_reason')}\n"
               f"  已烧:{st.get('burned_rows')}\n"
-              "人工处置后:确认剩余行安全 → sudo ... reset → 手动 burn-all,或回退流程。")
+              "人工处置后:确认剩余行安全 → sudo ... reset → 手动 burn,或回退流程。")
         return 1
     if st.get("phase") == "done":
         print("已完成。冷启验收用 verify / final_check.py。")
